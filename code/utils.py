@@ -144,7 +144,6 @@ class Ontology(object):
                     if 'children' not in ont[p_id]:
                         ont[p_id]['children'] = set()
                     ont[p_id]['children'].add(term_id)
-     
         return ont
 
     def get_anchestors(self, term_id):
