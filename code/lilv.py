@@ -7,6 +7,7 @@ import numpy as np
 import argparse
 import random
 from utils import Ontology
+from evaluate import evaluate
 
 def seed_everything(seed):
     random.seed(seed)
@@ -115,15 +116,15 @@ def read_data(root):
 
     go = Ontology(cfg.root + 'go.obo', with_rels=True)
 
-    train_data = pd.read_pickle(root + 'train_data.pkl')[['interpros', 'prop_annotations']].values
-    valid_data = pd.read_pickle(root + 'valid_data.pkl')[['interpros', 'prop_annotations']].values
-    test_data = pd.read_pickle(root + 'test_data.pkl')[['interpros', 'prop_annotations']].values
+    train_data = pd.read_pickle(root + 'train_data.pkl')[['interpros', 'prop_annotations']]
+    valid_data = pd.read_pickle(root + 'valid_data.pkl')[['interpros', 'prop_annotations']]
+    test_data = pd.read_pickle(root + 'test_data.pkl')[['interpros', 'prop_annotations']]
 
-    X_train, Y_train = name2idx(train_data, terms_dict, iprs_dict, go)
-    X_valid, Y_valid = name2idx(valid_data, terms_dict, iprs_dict, go)
-    X_test, Y_test = name2idx(test_data, terms_dict, iprs_dict, go, test=True)
+    X_train, Y_train = name2idx(train_data.values, terms_dict, iprs_dict, go)
+    X_valid, Y_valid = name2idx(valid_data.values, terms_dict, iprs_dict, go)
+    X_test, Y_test = name2idx(test_data.values, terms_dict, iprs_dict, go, test=True)
 
-    return terms_dict, iprs_dict, X_train, Y_train, X_valid, Y_valid, X_test, Y_test
+    return terms_dict, iprs_dict, X_train, Y_train, X_valid, Y_valid, X_test, Y_test, test_data
 
 def name2idx(data, terms_dict, iprs_dict, go, test=False):
     X = []
@@ -146,13 +147,13 @@ def name2idx(data, terms_dict, iprs_dict, go, test=False):
             Y.append(torch.tensor(list(ys_mapped)))
     return torch.cat(X, dim=0), Y
 
-def validate(model, loader, device):
+def validate(model, loader, device, verbose):
     r = []
     rr = []
     h1 = []
     h3 = []
     h10 = []
-    if cfg.verbose == 1:
+    if verbose == 1:
         loader = tqdm.tqdm(loader)
     with torch.no_grad():
         for X, Y, pos in loader:
@@ -189,8 +190,18 @@ def validate(model, loader, device):
     print(f'#Valid# MRR: {rr}, H1: {h1}, H3: {h3}')
     return r, rr, h1, h3, h10
 
-def test(model, loader, device):
-    pdb.set_trace()
+def test(model, loader, device, verbose, test_data):
+    if verbose == 1:
+        loader = tqdm.tqdm(loader)
+    preds = []
+    with torch.no_grad():
+        for X, Y in loader:
+            X = X.to(device)
+            Y = Y.to(device)
+            logits = torch.sigmoid(model.predict(X, Y))
+            preds.append(logits.cpu().numpy().tolist())
+    test_data['preds'] = preds
+    return test_data
 
 
 def parse_args(args=None):
@@ -199,7 +210,7 @@ def parse_args(args=None):
     parser.add_argument('--dataset', default='mf', type=str)
     parser.add_argument('--num_ng', default=4, type=int)
     parser.add_argument('--num_workers', default=4, type=int)
-    parser.add_argument('--max_epochs', default=200, type=int)
+    parser.add_argument('--max_epochs', default=5000, type=int)
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--bs', default=256, type=int)
     parser.add_argument('--lr', default=0.0001, type=float)
@@ -208,7 +219,7 @@ def parse_args(args=None):
     parser.add_argument('--prior', default=0.00001, type=float)
     parser.add_argument('--gpu', default=0, type=int)
     parser.add_argument('--emb_dim', default=256, type=int)
-    parser.add_argument('--valid_interval', default=10, type=int)
+    parser.add_argument('--valid_interval', default=50, type=int)
     parser.add_argument('--verbose', default=1, type=int)
     parser.add_argument('--tolerance', default=3, type=int)
     return parser.parse_args(args)
@@ -223,7 +234,7 @@ if __name__ == '__main__':
     root = cfg.root + '/' + cfg.dataset + '/'
     save_root = '../tmp/PUGO/'
     
-    terms_dict, iprs_dict, X_train, Y_train, X_valid, Y_valid, X_test, Y_test = read_data(root)
+    terms_dict, iprs_dict, X_train, Y_train, X_valid, Y_valid, X_test, Y_test, test_data = read_data(root)
     print(f'N Concepts:{len(terms_dict)}\nN Features:{len(iprs_dict)}')
     train_dataset = TrainDataset(terms_dict, X_train, Y_train, cfg.num_ng)
     train_dataloader = torch.utils.data.DataLoader(dataset=train_dataset, 
@@ -265,7 +276,7 @@ if __name__ == '__main__':
         print(f'Loss: {round(sum(avg_loss)/len(avg_loss), 4)}')
         if (epoch + 1) % cfg.valid_interval == 0:
             model.eval()
-            _, mrr, _, _, _ = validate(model, valid_dataloader, device)
+            _, mrr, _, _, _ = validate(model, valid_dataloader, device, cfg.verbose)
             if mrr >= max_rr:
                 max_rr = mrr
                 tolerance = cfg.tolerance
@@ -275,12 +286,9 @@ if __name__ == '__main__':
         if tolerance == 0:
             print(f'Best performance at epoch {epoch - cfg.tolerance * cfg.valid_interval + 1}')
             model.eval()
-            model.load_state_dict(torch.load(save_root + str(epoch - cfg.tolerance * cfg.valid_interval + 1)))
-            test(model, test_dataloader, device)
+            # model.load_state_dict(torch.load(save_root + str(epoch - cfg.tolerance * cfg.valid_interval + 1)))
+            model.load_state_dict(torch.load(save_root + '1500'))
+            test_df = test(model, test_dataloader, device, cfg.verbose, test_data)
+            evaluate(cfg.root[:-1], cfg.dataset, test_df)
             break
-
-
-
-
-        
 
