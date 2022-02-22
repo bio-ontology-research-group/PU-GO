@@ -73,7 +73,7 @@ class TestDataset(torch.utils.data.Dataset):
         return x, y
 
 class PUGO(torch.nn.Module):
-    def __init__(self, emb_dim, terms_dict, iprs_dict, do, prior):
+    def __init__(self, emb_dim, terms_dict, iprs_dict, do, prior, ranking):
         super().__init__()
         self.emb_dim = emb_dim
         self.terms_embedding = torch.nn.Embedding(len(terms_dict), emb_dim)
@@ -81,6 +81,7 @@ class PUGO(torch.nn.Module):
         self.fc_2 = torch.nn.Linear(emb_dim * 2, emb_dim)
         self.do = torch.nn.Dropout(do)
         self.prior = prior
+        self.ranking = ranking
 
         torch.nn.init.xavier_uniform_(self.terms_embedding.weight.data)
         torch.nn.init.xavier_uniform_(self.fc_1.weight.data)
@@ -94,12 +95,24 @@ class PUGO(torch.nn.Module):
             return self.prior * p_above - self.prior * p_below + u
         else:
             return self.prior * p_above
+    
+    def puc_loss(self, pred):
+        p_above = - torch.nn.functional.logsigmoid(pred[:, 0]).mean()
+        p_below = - torch.nn.functional.logsigmoid(-pred[:, 0]).mean()
+        u = - torch.nn.functional.logsigmoid(-pred[:, 1:]).mean()
+        if u > self.prior * p_below:
+            return self.prior * p_above - self.prior * p_below + u
+        else:
+            return self.prior * p_above
 
     def forward(self, X, Y):
         X_emb = self.fc_2(torch.nn.functional.relu(self.do(self.fc_1(X))))
         Y_emb = self.terms_embedding(Y)
         pred = (X_emb.unsqueeze(dim=1) * Y_emb).sum(dim=-1)
-        return self.pur_loss(pred)
+        if self.ranking:
+            return self.pur_loss(pred)
+        else:
+            return self.puc_loss(pred)
     
     def predict(self, X, Y):
         X_emb = self.fc_2(torch.nn.functional.relu(self.do(self.fc_1(X))))
@@ -208,13 +221,14 @@ def parse_args(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', default='../data/', type=str)
     parser.add_argument('--dataset', default='mf', type=str)
-    parser.add_argument('--num_ng', default=4, type=int)
-    parser.add_argument('--num_workers', default=4, type=int)
+    parser.add_argument('--num_ng', default=8, type=int)
+    parser.add_argument('--num_workers', default=8, type=int)
     parser.add_argument('--max_epochs', default=5000, type=int)
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--bs', default=256, type=int)
+    parser.add_argument('--ranking', default=0, type=int)
     parser.add_argument('--lr', default=0.0001, type=float)
-    parser.add_argument('--wd', default=0, type=float)
+    parser.add_argument('--wd', default=0.00001, type=float)
     parser.add_argument('--do', default=0.2, type=float)
     parser.add_argument('--prior', default=0.00001, type=float)
     parser.add_argument('--gpu', default=0, type=int)
@@ -232,7 +246,10 @@ if __name__ == '__main__':
     seed_everything(cfg.seed)
     device = torch.device(f'cuda:{cfg.gpu}' if torch.cuda.is_available() else 'cpu')
     root = cfg.root + '/' + cfg.dataset + '/'
-    save_root = '../tmp/PUGO/'
+    if cfg.ranking:
+        save_root = '../tmp/PUC/'
+    else:
+        save_root = '../tmp/PUR/'
     
     terms_dict, iprs_dict, X_train, Y_train, X_valid, Y_valid, X_test, Y_test, test_data = read_data(root)
     print(f'N Concepts:{len(terms_dict)}\nN Features:{len(iprs_dict)}')
@@ -254,7 +271,7 @@ if __name__ == '__main__':
                                                   num_workers=cfg.num_workers, 
                                                   shuffle=False, 
                                                   drop_last=True)                                 
-    model = PUGO(cfg.emb_dim, terms_dict, iprs_dict, cfg.do, cfg.prior)
+    model = PUGO(cfg.emb_dim, terms_dict, iprs_dict, cfg.do, cfg.prior, cfg.ranking)
     model = model.to(device)
     tolerance = cfg.tolerance
     max_rr = 0
@@ -286,8 +303,8 @@ if __name__ == '__main__':
         if tolerance == 0:
             print(f'Best performance at epoch {epoch - cfg.tolerance * cfg.valid_interval + 1}')
             model.eval()
-            # model.load_state_dict(torch.load(save_root + str(epoch - cfg.tolerance * cfg.valid_interval + 1)))
-            model.load_state_dict(torch.load(save_root + '1500'))
+            model.load_state_dict(torch.load(save_root + str(epoch - cfg.tolerance * cfg.valid_interval + 1)))
+            # model.load_state_dict(torch.load(save_root + '1500'))
             test_df = test(model, test_dataloader, device, cfg.verbose, test_data)
             evaluate(cfg.root[:-1], cfg.dataset, test_df)
             break

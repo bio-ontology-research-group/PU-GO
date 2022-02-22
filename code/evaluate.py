@@ -24,18 +24,8 @@ def evaluate(data_root, ont, test_df):
     test_annotations = list(map(lambda x: set(x), test_annotations))
     go_rels.calculate_ic(annotations + test_annotations)
 
-    # Print IC values of terms
-    ics = {}
-    for term in terms:
-        ics[term] = go_rels.get_ic(term)
-
-    # Combine scores for diamond and deepgo
-    alpha = 0.5
     eval_preds = []
     for i, row in enumerate(test_df.itertuples()):
-        # if combine:
-        #     preds = row.blast_preds * alpha + row.preds * (1 - alpha)
-        # else:
         preds = row.preds
         eval_preds.append(preds)
     
@@ -71,10 +61,10 @@ def evaluate(data_root, ont, test_df):
 
         preds = list(map(lambda x: set(filter(lambda y: y in go_set, x)), preds))
         fscore, prec, rec, s, ru, mi, fps, fns, avg_ic, wf = evaluate_annotations(go_rels, labels, preds)
-        print(f'AVG IC {avg_ic:.3f}')
+        # print(f'AVG IC {avg_ic:.3f}')
         precisions.append(prec)
         recalls.append(rec)
-        print(f'Fscore: {fscore}, Precision: {prec}, Recall: {rec} S: {s}, RU: {ru}, MI: {mi} threshold: {threshold}, WFmax: {wf}')
+        print(f'Fscore: {round(fscore, 3)}, Precision: {round(prec, 3)}, Recall: {round(rec, 3)} S: {round(s, 3)}, threshold: {threshold}')
         if fmax < fscore:
             fmax = fscore
             tmax = threshold
@@ -85,7 +75,7 @@ def evaluate(data_root, ont, test_df):
         if smin > s:
             smin = s
     print(f'Fmax: {fmax:0.3f}, Smin: {smin:0.3f}, threshold: {tmax}')
-    print(f'WFmax: {wfmax:0.3f}, threshold: {wtmax}')
+    # print(f'WFmax: {wfmax:0.3f}, threshold: {wtmax}')
     precisions = np.array(precisions)
     recalls = np.array(recalls)
     sorted_index = np.argsort(recalls)
@@ -93,7 +83,7 @@ def evaluate(data_root, ont, test_df):
     precisions = precisions[sorted_index]
     aupr = np.trapz(precisions, recalls)
     print(f'AUPR: {aupr:0.3f}')
-    print(f'AVGIC: {avgic:0.3f}')
+    # print(f'AVGIC: {avgic:0.3f}')
 
 def evaluate_annotations(go, real_annots, pred_annots):
     total = 0
