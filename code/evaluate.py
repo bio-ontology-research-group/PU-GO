@@ -34,7 +34,7 @@ def evaluate(data_root, ont, test_df):
     tmax = 0.0
     wfmax = 0.0
     wtmax = 0.0
-    avgic = 0.0
+    # avgic = 0.0
     precisions = []
     recalls = []
     smin = 1000000.0
@@ -60,7 +60,7 @@ def evaluate(data_root, ont, test_df):
             preds.append(annots)
 
         preds = list(map(lambda x: set(filter(lambda y: y in go_set, x)), preds))
-        fscore, prec, rec, s, ru, mi, fps, fns, avg_ic, wf = evaluate_annotations(go_rels, labels, preds)
+        fscore, prec, rec, s, ru, mi, fps, fns = evaluate_annotations(go_rels, labels, preds)
         # print(f'AVG IC {avg_ic:.3f}')
         precisions.append(prec)
         recalls.append(rec)
@@ -68,10 +68,7 @@ def evaluate(data_root, ont, test_df):
         if fmax < fscore:
             fmax = fscore
             tmax = threshold
-            avgic = avg_ic
-        if wfmax < wf:
-            wfmax = wf
-            wtmax = threshold
+            # avgic = avg_ic
         if smin > s:
             smin = s
     print(f'Fmax: {fmax:0.3f}, Smin: {smin:0.3f}, threshold: {tmax}')
@@ -89,12 +86,12 @@ def evaluate_annotations(go, real_annots, pred_annots):
     total = 0
     p = 0.0
     r = 0.0
-    wp = 0.0
+    # wp = 0.0
     wr = 0.0
     p_total= 0
     ru = 0.0
     mi = 0.0
-    avg_ic = 0.0
+    # avg_ic = 0.0
     fps = []
     fns = []
     for i in range(len(real_annots)):
@@ -106,7 +103,7 @@ def evaluate_annotations(go, real_annots, pred_annots):
         tpic = 0.0
         for go_id in tp:
             tpic += go.get_norm_ic(go_id)
-            avg_ic += go.get_ic(go_id)
+            # avg_ic += go.get_ic(go_id)
         fpic = 0.0
         for go_id in fp:
             fpic += go.get_norm_ic(go_id)
@@ -129,19 +126,19 @@ def evaluate_annotations(go, real_annots, pred_annots):
             p_total += 1
             precision = tpn / (1.0 * (tpn + fpn))
             p += precision
-            wp += tpic / (tpic + fpic)
-    avg_ic = (avg_ic + mi) / total
+            # wp += tpic / (tpic + fpic)
+    # avg_ic = (avg_ic + mi) / total
     ru /= total
     mi /= total
     r /= total
     wr /= total
     if p_total > 0:
         p /= p_total
-        wp /= p_total
+        # wp /= p_total
     f = 0.0
-    wf = 0.0
+    # wf = 0.0
     if p + r > 0:
         f = 2 * p * r / (p + r)
-        wf = 2 * wp * wr / (wp + wr)
+    #     wf = 2 * wp * wr / (wp + wr)
     s = math.sqrt(ru * ru + mi * mi)
-    return f, p, r, s, ru, mi, fps, fns, avg_ic, wf
+    return f, p, r, s, ru, mi, fps, fns
