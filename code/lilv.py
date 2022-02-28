@@ -18,18 +18,31 @@ def seed_everything(seed):
     torch.backends.cudnn.benchmark = False
 
 class TrainDataset(torch.utils.data.Dataset):
-    def __init__(self, terms_dict, X, Y, num_ng):
+    def __init__(self, terms_dict, X, Y, num_ng, nf1, nf1_dict, zero_classes):
         super().__init__()
         self.terms_dict = terms_dict
         self.X, self.Y = X, Y
         self.num_ng = num_ng
-      
+        self.nf1 = nf1
+        self.nf1_dict = nf1_dict
+        self.zero_classes = zero_classes
+        self.all_c = {**terms_dict, **zero_classes}
+    
     def unlabeled_sampling(self, ys):
         y_neg_pool = torch.ones(len(self.terms_dict))
         y_neg_pool[ys] = 0
         y_neg_pool = y_neg_pool.nonzero()
         y_neg = y_neg_pool[torch.randint(len(y_neg_pool), (self.num_ng,))]
         return y_neg
+    
+    def get_subsumption(self):
+        pos = self.nf1[torch.randint(len(self.nf1), (1, ))][0]
+        y_neg_pool = torch.ones(len(self.all_c))
+        y_neg_pool[self.nf1_dict[pos[0].item()]] = 0
+        y_neg_pool = y_neg_pool.nonzero()
+        y_neg = y_neg_pool[torch.randint(len(y_neg_pool), (self.num_ng,))]
+        sub = torch.cat([pos.unsqueeze(dim=0), torch.cat([pos[0].expand_as(y_neg), y_neg], dim=1)], dim=0)
+        return sub
 
     def __len__(self):
         assert len(self.X) == len(self.Y)
@@ -41,7 +54,8 @@ class TrainDataset(torch.utils.data.Dataset):
         y_pos = ys[torch.randint(len(ys), (1,))].unsqueeze(dim=0)
         y_neg = self.unlabeled_sampling(ys)
         y = torch.cat([y_pos, y_neg], dim=0).squeeze(dim=-1)
-        return x, y
+        sub = self.get_subsumption()
+        return x, y, sub
 
 class ValidDataset(torch.utils.data.Dataset):
     def __init__(self, terms_dict, X, Y):
@@ -73,18 +87,22 @@ class TestDataset(torch.utils.data.Dataset):
         return x, y
 
 class PUGO(torch.nn.Module):
-    def __init__(self, emb_dim, terms_dict, iprs_dict, do, prior):
+    def __init__(self, emb_dim, terms_dict, iprs_dict, do, prior, zero_classes):
         super().__init__()
         self.emb_dim = emb_dim
-        self.terms_embedding = torch.nn.Embedding(len(terms_dict), emb_dim)
-        self.fc_1 = torch.nn.Linear(len(iprs_dict), emb_dim * 2)
-        self.fc_2 = torch.nn.Linear(emb_dim * 2, emb_dim)
         self.do = torch.nn.Dropout(do)
         self.prior = prior
+        self.terms_embedding = torch.nn.Embedding(len(terms_dict) + len(zero_classes), emb_dim)
+        self.fc_1 = torch.nn.Linear(len(iprs_dict), emb_dim * 2)
+        self.fc_2 = torch.nn.Linear(emb_dim * 2, emb_dim)
+        self.fc_1_sub = torch.nn.Linear(emb_dim * 2, emb_dim)
+        self.fc_2_sub = torch.nn.Linear(emb_dim, 1)
 
         torch.nn.init.xavier_uniform_(self.terms_embedding.weight.data)
         torch.nn.init.xavier_uniform_(self.fc_1.weight.data)
         torch.nn.init.xavier_uniform_(self.fc_2.weight.data)
+        torch.nn.init.xavier_uniform_(self.fc_1_sub.weight.data)
+        torch.nn.init.xavier_uniform_(self.fc_2_sub.weight.data)
     
     def pu_loss(self, pred):
         p_above = - torch.nn.functional.logsigmoid(pred[:, 0]).mean()
@@ -95,11 +113,14 @@ class PUGO(torch.nn.Module):
         else:
             return self.prior * p_above
 
-    def forward(self, X, Y):
+    def forward(self, X, Y, Sub):
         X_emb = self.fc_2(torch.nn.functional.relu(self.do(self.fc_1(X))))
         Y_emb = self.terms_embedding(Y)
-        pred = (X_emb.unsqueeze(dim=1) * Y_emb).sum(dim=-1)
-        return self.pu_loss(pred)
+        pred_pf = (X_emb.unsqueeze(dim=1) * Y_emb).sum(dim=-1)
+        c1_emb = self.terms_embedding(Sub[:, :, 0])
+        c2_emb = self.terms_embedding(Sub[:, :, 1])
+        pred_sub = self.fc_2_sub(torch.nn.functional.relu(self.do(self.fc_1_sub(torch.cat([c1_emb, c2_emb], dim=-1))))).squeeze(dim=-1)
+        return self.pu_loss(pred_pf), self.pu_loss(pred_sub)
     
     def predict(self, X, Y):
         X_emb = self.fc_2(torch.nn.functional.relu(self.do(self.fc_1(X))))
@@ -115,6 +136,17 @@ def read_data(root):
     iprs_dict = {v:k for k, v in enumerate(iprs)}
 
     go = Ontology(cfg.root + 'go.obo', with_rels=True)
+    nf1, nf1_dict, zero_classes = load_normal_forms(cfg.root + 'go.norm', terms_dict)
+
+    neg = {}
+    with open(cfg.root + 'neg.txt') as f:
+        for line in f:
+            line = line.split('\t')
+            if 'NOT' in line[3]:
+                try:
+                    neg[line[2].upper()].append(line[4])
+                except:
+                    neg[line[2].upper()] = [line[4]]
 
     train_data = pd.read_pickle(root + 'train_data.pkl')[['interpros', 'prop_annotations']]
     valid_data = pd.read_pickle(root + 'valid_data.pkl')[['interpros', 'prop_annotations']]
@@ -124,7 +156,38 @@ def read_data(root):
     X_valid, Y_valid = name2idx(valid_data.values, terms_dict, iprs_dict, go)
     X_test, Y_test = name2idx(test_data.values, terms_dict, iprs_dict, go, test=True)
 
-    return terms_dict, iprs_dict, X_train, Y_train, X_valid, Y_valid, X_test, Y_test, test_data, go
+    return terms_dict, iprs_dict, X_train, Y_train, X_valid, Y_valid, X_test, Y_test, test_data, go, nf1, nf1_dict, zero_classes
+
+def load_normal_forms(go_file, terms_dict):
+    nf1 = []
+    zclasses = {}
+    
+    def get_index(go_id):
+        if go_id in terms_dict:
+            index = terms_dict[go_id]
+        elif go_id in zclasses:
+            index = zclasses[go_id]
+        else:
+            zclasses[go_id] = len(terms_dict) + len(zclasses)
+            index = zclasses[go_id]
+        return index
+                
+    with open(go_file) as f:
+        for line in f:
+            line = line.strip().replace('_', ':')
+            if line.find('SubClassOf') == -1:
+                continue
+            left, right = line.split(' SubClassOf ')
+            # C SubClassOf D
+            if len(left) == 10 and len(right) == 10:
+                go1, go2 = left, right
+                nf1.append([get_index(go1), get_index(go2)])
+    nf1_df = pd.DataFrame(nf1, columns=['c1', 'c2'])
+    nf1_grouped = nf1_df.groupby(['c1'])['c2'].apply(list).reset_index(name='c2s').values
+    nf1_dict = {}
+    for record in nf1_grouped:
+        nf1_dict[record[0]] = record[1]
+    return torch.tensor(nf1), nf1_dict, zclasses
 
 def name2idx(data, terms_dict, iprs_dict, go, test=False):
     X = []
@@ -233,7 +296,8 @@ def parse_args(args=None):
     parser.add_argument('--do', default=0.2, type=float)
     parser.add_argument('--prior', default=0.00001, type=float)
     parser.add_argument('--num_ng', default=8, type=int)
-    parser.add_argument('--emb_dim', default=256, type=int)
+    parser.add_argument('--emb_dim', default=1024, type=int)
+    parser.add_argument('--sub', default=1, type=float)
     # Untunable
     parser.add_argument('--num_workers', default=8, type=int)
     parser.add_argument('--max_epochs', default=5000, type=int)
@@ -252,14 +316,14 @@ if __name__ == '__main__':
     seed_everything(cfg.seed)
     device = torch.device(f'cuda:{cfg.gpu}' if torch.cuda.is_available() else 'cpu')
     root = cfg.root + '/' + cfg.dataset + '/'
-    save_root = f'../tmp/dataset_{cfg.dataset}_bs_{cfg.bs}_lr_{cfg.lr}_wd_{cfg.wd}_do_{cfg.do}_prior_{cfg.prior}_num_ng_{cfg.num_ng}_emb_dim_{cfg.emb_dim}/'
+    save_root = f'../tmp/dataset_{cfg.dataset}_sub_{cfg.sub}_bs_{cfg.bs}_lr_{cfg.lr}_wd_{cfg.wd}_do_{cfg.do}_prior_{cfg.prior}_num_ng_{cfg.num_ng}_emb_dim_{cfg.emb_dim}/'
     # save_root = '../tmp/PUR/'
     if not os.path.exists(save_root):
         os.makedirs(save_root)
     
-    terms_dict, iprs_dict, X_train, Y_train, X_valid, Y_valid, X_test, Y_test, test_data, go = read_data(root)
+    terms_dict, iprs_dict, X_train, Y_train, X_valid, Y_valid, X_test, Y_test, test_data, go, nf1, nf1_dict, zero_classes = read_data(root)
     print(f'N Concepts:{len(terms_dict)}\nN Features:{len(iprs_dict)}')
-    train_dataset = TrainDataset(terms_dict, X_train, Y_train, cfg.num_ng)
+    train_dataset = TrainDataset(terms_dict, X_train, Y_train, cfg.num_ng, nf1, nf1_dict, zero_classes)
     train_dataloader = torch.utils.data.DataLoader(dataset=train_dataset, 
                                                    batch_size=cfg.bs, 
                                                    num_workers=cfg.num_workers, 
@@ -277,7 +341,7 @@ if __name__ == '__main__':
                                                   num_workers=cfg.num_workers, 
                                                   shuffle=False, 
                                                   drop_last=True)                                 
-    model = PUGO(cfg.emb_dim, terms_dict, iprs_dict, cfg.do, cfg.prior)
+    model = PUGO(cfg.emb_dim, terms_dict, iprs_dict, cfg.do, cfg.prior, zero_classes)
     model = model.to(device)
     tolerance = cfg.tolerance
     max_rr = 0
@@ -288,10 +352,12 @@ if __name__ == '__main__':
         avg_loss = []
         if cfg.verbose == 1:
             train_dataloader = tqdm.tqdm(train_dataloader)
-        for X, Y in train_dataloader:
+        for X, Y, Sub in train_dataloader:
             X = X.to(device)
             Y = Y.to(device)
-            loss = model(X, Y)
+            Sub = Sub.to(device)
+            loss_pf, loss_sub = model(X, Y, Sub)
+            loss = loss_pf + cfg.sub * loss_sub
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
