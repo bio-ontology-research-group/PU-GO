@@ -46,8 +46,8 @@ def evaluate(data_root, ont, test_df):
     labels = test_df['prop_annotations'].values
     labels = list(map(lambda x: set(filter(lambda y: y in go_set, x)), labels))
     
-    for t in range(0, 101):
-        threshold = t / 100.0
+    for t in range(1, 101):
+        threshold = t / 10000.0
         preds = []
         for i, row in enumerate(test_df.itertuples()):
             annots = set()
