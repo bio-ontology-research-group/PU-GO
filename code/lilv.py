@@ -60,21 +60,38 @@ class DeepGOPU(torch.nn.Module):
     def pu_loss(self, pred, label, lmbda):
         pos_label = (label == 1).float()
         unl_label = (label == 0).float()
+        unl_label = unl_label * (torch.randn_like(unl_label).uniform_() < lmbda)
         neg_label = (label == -1).float()
+
         p_above = - (torch.nn.functional.logsigmoid(pred) * pos_label).sum() / pos_label.sum()
         p_below = (torch.log(1 - torch.sigmoid(pred) + 1e-10) * pos_label).sum() / pos_label.sum()
-        u = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * unl_label).sum() / unl_label.sum()
-
-        if u > self.prior * p_below:
-            pu_loss = self.prior * p_above - self.prior * p_below + u
-        else:
-            pu_loss = self.prior * p_above
-        
+        u_0 = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * unl_label).sum() / unl_label.sum()
         if neg_label.sum() > 0:
-            pn_loss = - (torch.nn.functional.logsigmoid(pred) * pos_label).sum() / pos_label.sum() - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * neg_label).sum() / neg_label.sum()
+            u_1 = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * neg_label).sum() / neg_label.sum()
         else:
-            pn_loss = 0
-        return pu_loss + lmbda * pn_loss
+            u_1 = 0
+        u = u_0 + u_1
+        if u > self.prior * p_below:
+            return self.prior * p_above - self.prior * p_below + u
+        else:
+            return self.prior * p_above
+
+        # # PU Learning
+        # p_above = - (torch.nn.functional.logsigmoid(pred) * pos_label).sum() / pos_label.sum()
+        # p_below = (torch.log(1 - torch.sigmoid(pred) + 1e-10) * pos_label).sum() / pos_label.sum()
+        # u = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * unl_label).sum() / unl_label.sum()
+        # if u > self.prior * p_below:
+        #     pu_loss = self.prior * p_above - self.prior * p_below + u
+        # else:
+        #     pu_loss = self.prior * p_above
+
+        # # PN Learning
+        # if neg_label.sum() > 0:
+        #     # pn_loss = - (torch.nn.functional.logsigmoid(pred) * pos_label).sum() / pos_label.sum() - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * neg_label).sum() / neg_label.sum()
+        #     pn_loss = - torch.nn.functional.logsigmoid((pred * pos_label).sum() / pos_label.sum() - (pred * neg_label).sum() / neg_label.sum())
+        # else:
+        #     pn_loss = 0
+        # return pu_loss + lmbda * pn_loss
     
     def pn_loss(self, pred, label):
         pos = - (torch.nn.functional.logsigmoid(pred) * label).sum() / label.sum()
@@ -192,7 +209,7 @@ def test(model, loader, device, verbose, test_data, terms_dict, go):
         results.append(pred.cpu().numpy().tolist())
     
     print('Propogating results.')
-    for scores in tqdm.tqdm(results):
+    for scores in results:
         prop_annots = {}
         for go_id, j in terms_dict.items():
             score = scores[j]
@@ -224,7 +241,7 @@ def parse_args(args=None):
     parser.add_argument('--prior', default=0.000001, type=float)
     parser.add_argument('--emb_dim', default=1024, type=int)
     parser.add_argument('--pu', default=1, type=int)
-    parser.add_argument('--lmbda', default=1, type=int)
+    parser.add_argument('--lmbda', default=0.01, type=float)
     # Untunable
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--max_epochs', default=5000, type=int)
@@ -300,7 +317,7 @@ if __name__ == '__main__':
             print(f'Best performance at epoch {epoch - cfg.tolerance * cfg.valid_interval + 1}')
             model.eval()
             model.load_state_dict(torch.load(save_root + str(epoch - cfg.tolerance * cfg.valid_interval + 1)))
-            # model.load_state_dict(torch.load(save_root + '100'))
+            # model.load_state_dict(torch.load(save_root + '350'))
             test_df = test(model, test_dataloader, device, cfg.verbose, test_data, terms_dict, go)
             evaluate(cfg.root[:-1], cfg.dataset, test_df)
             break
