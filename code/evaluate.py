@@ -47,7 +47,7 @@ def evaluate(data_root, ont, test_df):
     labels = list(map(lambda x: set(filter(lambda y: y in go_set, x)), labels))
     
     for t in range(1, 101):
-        threshold = t / 10000.0
+        threshold = t / 100.0
         preds = []
         for i, row in enumerate(test_df.itertuples()):
             annots = set()
