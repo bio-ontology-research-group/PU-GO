@@ -59,22 +59,34 @@ class DeepGOPU(torch.nn.Module):
 
     def pu_loss(self, pred, label, lmbda):
         pos_label = (label == 1).float()
-        unl_label = (label == 0).float()
-        unl_label = unl_label * (torch.randn_like(unl_label).uniform_() < lmbda)
-        neg_label = (label == -1).float()
+        unl_label = (label == 0).float() + (label == -1).float()
 
         p_above = - (torch.nn.functional.logsigmoid(pred) * pos_label).sum() / pos_label.sum()
         p_below = (torch.log(1 - torch.sigmoid(pred) + 1e-10) * pos_label).sum() / pos_label.sum()
-        u_0 = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * unl_label).sum() / unl_label.sum()
-        if neg_label.sum() > 0:
-            u_1 = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * neg_label).sum() / neg_label.sum()
-        else:
-            u_1 = 0
-        u = u_0 + u_1
+        u = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * unl_label).sum() / unl_label.sum()
         if u > self.prior * p_below:
             return self.prior * p_above - self.prior * p_below + u
         else:
             return self.prior * p_above
+
+
+        # pos_label = (label == 1).float()
+        # unl_label = (label == 0).float()
+        # # unl_label = unl_label * (torch.randn_like(unl_label).uniform_() < lmbda)
+        # neg_label = (label == -1).float()
+
+        # p_above = - (torch.nn.functional.logsigmoid(pred) * pos_label).sum() / pos_label.sum()
+        # p_below = (torch.log(1 - torch.sigmoid(pred) + 1e-10) * pos_label).sum() / pos_label.sum()
+        # u_0 = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * unl_label).sum() / unl_label.sum()
+        # if neg_label.sum() > 0:
+        #     u_1 = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * neg_label).sum() / neg_label.sum()
+        #     u = (u_0 + u_1) / 2
+        # else:
+        #     u = u_0
+        # if u > self.prior * p_below:
+        #     return self.prior * p_above - self.prior * p_below + u
+        # else:
+        #     return self.prior * p_above
 
         # # PU Learning
         # p_above = - (torch.nn.functional.logsigmoid(pred) * pos_label).sum() / pos_label.sum()
@@ -231,7 +243,7 @@ def test(model, loader, device, verbose, test_data, terms_dict, go):
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--root', default='../data/', type=str)
+    parser.add_argument('--root', default='../new_data/', type=str)
     parser.add_argument('--dataset', default='mf', type=str)
     # Tunable
     parser.add_argument('--bs', default=256, type=int)
@@ -288,6 +300,7 @@ if __name__ == '__main__':
     model = model.to(device)
     tolerance = cfg.tolerance
     max_aupr = 0
+    # min_loss = 100000
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.wd)
     for epoch in range(cfg.max_epochs):
         print(f'Epoch {epoch + 1}:')
@@ -303,7 +316,8 @@ if __name__ == '__main__':
             loss.backward()
             optimizer.step()
             avg_loss.append(loss.item())
-        print(f'Loss: {round(sum(avg_loss)/len(avg_loss), 4)}')
+        avg_loss = round(sum(avg_loss)/len(avg_loss), 6)
+        print(f'Loss: {avg_loss}')
         if (epoch + 1) % cfg.valid_interval == 0:
             model.eval()
             aupr = validate(model, valid_dataloader, device, cfg.verbose)
@@ -312,12 +326,17 @@ if __name__ == '__main__':
                 tolerance = cfg.tolerance
             else:
                 tolerance -= 1
+            # if avg_loss < min_loss:
+            #     min_loss = avg_loss
+            #     tolerance = cfg.tolerance
+            # else:
+            #     tolerance -= 1
             torch.save(model.state_dict(), save_root + (str(epoch + 1)))
         if tolerance == 0:
             print(f'Best performance at epoch {epoch - cfg.tolerance * cfg.valid_interval + 1}')
             model.eval()
             model.load_state_dict(torch.load(save_root + str(epoch - cfg.tolerance * cfg.valid_interval + 1)))
-            # model.load_state_dict(torch.load(save_root + '350'))
+            # model.load_state_dict(torch.load(save_root + '1050'))
             test_df = test(model, test_dataloader, device, cfg.verbose, test_data, terms_dict, go)
             evaluate(cfg.root[:-1], cfg.dataset, test_df)
             break
