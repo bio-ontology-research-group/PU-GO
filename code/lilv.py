@@ -41,7 +41,7 @@ class DeepGOPU(torch.nn.Module):
         self.do = torch.nn.Dropout(do)
         self.prior = prior
         self.pu = pu
-        self.fc_1 = torch.nn.Linear(len(iprs_dict), emb_dim)
+        self.fc_1 = torch.nn.Linear(100, emb_dim)
         self.fc_2 = torch.nn.Linear(emb_dim, len(terms_dict))
         self.lmbda = lmbda
 
@@ -145,9 +145,9 @@ def read_data(root):
 
     go = Ontology(cfg.root + 'go.obo', with_rels=True)
 
-    train_data = pd.read_pickle(root + 'train_data.pkl')[['interpros', 'prop_annotations', 'accessions']]
-    valid_data = pd.read_pickle(root + 'valid_data.pkl')[['interpros', 'prop_annotations']]
-    test_data = pd.read_pickle(root + 'test_data.pkl')[['interpros', 'prop_annotations']]
+    train_data = pd.read_pickle(root + 'train_data.pkl')[[cfg.dataset + '_dl2vec', 'prop_annotations', 'accessions']]
+    valid_data = pd.read_pickle(root + 'valid_data.pkl')[[cfg.dataset + '_dl2vec', 'prop_annotations']]
+    test_data = pd.read_pickle(root + 'test_data.pkl')[[cfg.dataset + '_dl2vec', 'prop_annotations']]
 
     neg = read_neg(cfg.root)
 
@@ -161,10 +161,11 @@ def name2idx(data, terms_dict, iprs_dict, go, neg=[]):
     X = []
     Y = []
     for i in range(len(data)):
-        xs_mapped = torch.zeros(1, len(iprs_dict))
-        xs = data[i][0]
-        for x in xs:
-            xs_mapped[0][iprs_dict[x]] = 1
+        # xs_mapped = torch.zeros(1, len(iprs_dict))
+        # xs = data[i][0]
+        # for x in xs:
+        #     xs_mapped[0][iprs_dict[x]] = 1
+        xs_mapped = torch.tensor(data[i][0]).unsqueeze(dim=0)
         ys_mapped = torch.zeros(1, len(terms_dict))
         ys = data[i][1]
         for y in ys:
@@ -250,16 +251,16 @@ def parse_args(args=None):
     parser.add_argument('--lr', default=0.0001, type=float)
     parser.add_argument('--wd', default=0, type=float)
     parser.add_argument('--do', default=0.2, type=float)
-    parser.add_argument('--prior', default=0.000001, type=float)
-    parser.add_argument('--emb_dim', default=1024, type=int)
+    parser.add_argument('--prior', default=0.0001, type=float)
+    parser.add_argument('--emb_dim', default=512, type=int)
     parser.add_argument('--pu', default=1, type=int)
-    parser.add_argument('--lmbda', default=0.01, type=float)
+    parser.add_argument('--lmbda', default=1, type=float)
     # Untunable
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--max_epochs', default=5000, type=int)
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--gpu', default=0, type=int)
-    parser.add_argument('--valid_interval', default=50, type=int)
+    parser.add_argument('--valid_interval', default=20, type=int)
     parser.add_argument('--verbose', default=1, type=int)
     parser.add_argument('--tolerance', default=3, type=int)
     return parser.parse_args(args)
@@ -336,7 +337,7 @@ if __name__ == '__main__':
             print(f'Best performance at epoch {epoch - cfg.tolerance * cfg.valid_interval + 1}')
             model.eval()
             model.load_state_dict(torch.load(save_root + str(epoch - cfg.tolerance * cfg.valid_interval + 1)))
-            # model.load_state_dict(torch.load(save_root + '1050'))
+            # model.load_state_dict(torch.load(save_root + '420'))
             test_df = test(model, test_dataloader, device, cfg.verbose, test_data, terms_dict, go)
             evaluate(cfg.root[:-1], cfg.dataset, test_df)
             break
