@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 from xml.etree import ElementTree as ET
 import math
+import pdb
 
 BIOLOGICAL_PROCESS = 'GO:0008150'
 MOLECULAR_FUNCTION = 'GO:0003674'
@@ -51,6 +52,7 @@ class Ontology(object):
 
     def __init__(self, filename='data/go.obo', with_rels=False):
         self.ont = self.load(filename, with_rels)
+        self.ont_reversed = self.reverse_ont(self.ont)
         self.ic = None
         self.ic_norm = 0.0
 
@@ -145,6 +147,32 @@ class Ontology(object):
                         ont[p_id]['children'] = set()
                     ont[p_id]['children'].add(term_id)
         return ont
+    
+    def reverse_ont(self, ont):
+        ret = dict()
+        for k, v in ont.items():
+            v_reversed = k
+            for k_reversed in v['is_a']:
+                try:
+                    ret[k_reversed].add(v_reversed)
+                except:
+                    ret[k_reversed] = set([v_reversed])
+        return ret
+
+    def get_descendants(self, term_id):
+        term_set = set()
+        q = deque()
+        q.append(term_id)
+        while(len(q) > 0):
+            t_id = q.popleft()
+            if t_id not in term_set:
+                term_set.add(t_id)
+                try:
+                    for child_id in self.ont_reversed[t_id]:
+                        q.append(child_id)
+                except:
+                    pass
+        return term_set
 
     def get_anchestors(self, term_id):
         if term_id not in self.ont:

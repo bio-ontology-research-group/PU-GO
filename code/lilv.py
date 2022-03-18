@@ -41,7 +41,7 @@ class DeepGOPU(torch.nn.Module):
         self.do = torch.nn.Dropout(do)
         self.prior = prior
         self.pu = pu
-        self.fc_1 = torch.nn.Linear(100, emb_dim)
+        self.fc_1 = torch.nn.Linear(len(iprs_dict) + 200, emb_dim)
         self.fc_2 = torch.nn.Linear(emb_dim, len(terms_dict))
         self.lmbda = lmbda
 
@@ -58,35 +58,34 @@ class DeepGOPU(torch.nn.Module):
             return self.prior * p_above   
 
     def pu_loss(self, pred, label, lmbda):
-        pos_label = (label == 1).float()
-        unl_label = (label == 0).float() + (label == -1).float()
-
-        p_above = - (torch.nn.functional.logsigmoid(pred) * pos_label).sum() / pos_label.sum()
-        p_below = (torch.log(1 - torch.sigmoid(pred) + 1e-10) * pos_label).sum() / pos_label.sum()
-        u = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * unl_label).sum() / unl_label.sum()
-        if u > self.prior * p_below:
-            return self.prior * p_above - self.prior * p_below + u
-        else:
-            return self.prior * p_above
-
-
         # pos_label = (label == 1).float()
-        # unl_label = (label == 0).float()
-        # # unl_label = unl_label * (torch.randn_like(unl_label).uniform_() < lmbda)
-        # neg_label = (label == -1).float()
+        # unl_label = (label == 0).float() + (label == -1).float()
 
         # p_above = - (torch.nn.functional.logsigmoid(pred) * pos_label).sum() / pos_label.sum()
         # p_below = (torch.log(1 - torch.sigmoid(pred) + 1e-10) * pos_label).sum() / pos_label.sum()
-        # u_0 = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * unl_label).sum() / unl_label.sum()
-        # if neg_label.sum() > 0:
-        #     u_1 = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * neg_label).sum() / neg_label.sum()
-        #     u = (u_0 + u_1) / 2
-        # else:
-        #     u = u_0
+        # u = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * unl_label).sum() / unl_label.sum()
         # if u > self.prior * p_below:
         #     return self.prior * p_above - self.prior * p_below + u
         # else:
         #     return self.prior * p_above
+
+
+        pos_label = (label == 1).float()
+        unl_label = (label == 0).float()
+        neg_label = (label == -1).float()
+
+        p_above = - (torch.nn.functional.logsigmoid(pred) * pos_label).sum() / pos_label.sum()
+        p_below = (torch.log(1 - torch.sigmoid(pred) + 1e-10) * pos_label).sum() / pos_label.sum()
+        u_0 = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * unl_label).sum() / unl_label.sum()
+        if neg_label.sum() > 0:
+            u_1 = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * neg_label).sum() / neg_label.sum()
+            u = (u_0 + lmbda * u_1) / 2
+        else:
+            u = u_0
+        if u > self.prior * p_below:
+            return self.prior * p_above - self.prior * p_below + u
+        else:
+            return self.prior * p_above
 
         # # PU Learning
         # p_above = - (torch.nn.functional.logsigmoid(pred) * pos_label).sum() / pos_label.sum()
@@ -111,7 +110,7 @@ class DeepGOPU(torch.nn.Module):
         return pos + neg
 
     def forward(self, X, Y):
-        X_pred = self.fc_2(torch.nn.functional.relu(self.do(self.fc_1(X))))
+        X_pred = self.fc_2(torch.nn.functional.leaky_relu(self.do(self.fc_1(X))))
         if self.pu == 0:
             return self.pn_loss(X_pred, Y)
         elif self.pu == 1:
@@ -120,7 +119,7 @@ class DeepGOPU(torch.nn.Module):
             return self.pur_loss(X_pred, Y)
         
     def predict(self, X):
-        return torch.sigmoid(self.fc_2(torch.nn.functional.relu(self.do(self.fc_1(X)))))
+        return torch.sigmoid(self.fc_2(torch.nn.functional.leaky_relu(self.do(self.fc_1(X)))))
 
 def read_neg(root):
     info = []
@@ -145,9 +144,9 @@ def read_data(root):
 
     go = Ontology(cfg.root + 'go.obo', with_rels=True)
 
-    train_data = pd.read_pickle(root + 'train_data.pkl')[[cfg.dataset + '_dl2vec', 'prop_annotations', 'accessions']]
-    valid_data = pd.read_pickle(root + 'valid_data.pkl')[[cfg.dataset + '_dl2vec', 'prop_annotations']]
-    test_data = pd.read_pickle(root + 'test_data.pkl')[[cfg.dataset + '_dl2vec', 'prop_annotations']]
+    train_data = pd.read_pickle(root + 'train_data.pkl')[['interpros', cfg.dataset + '_dl2vec', 'prop_annotations', 'accessions']]
+    valid_data = pd.read_pickle(root + 'valid_data.pkl')[['interpros', cfg.dataset + '_dl2vec', 'prop_annotations']]
+    test_data = pd.read_pickle(root + 'test_data.pkl')[['interpros', cfg.dataset + '_dl2vec', 'prop_annotations']]
 
     neg = read_neg(cfg.root)
 
@@ -160,33 +159,44 @@ def read_data(root):
 def name2idx(data, terms_dict, iprs_dict, go, neg=[]):
     X = []
     Y = []
+    pos_count = 0
+    neg_count = 0
+    unl_count = 0
     for i in range(len(data)):
-        # xs_mapped = torch.zeros(1, len(iprs_dict))
-        # xs = data[i][0]
-        # for x in xs:
-        #     xs_mapped[0][iprs_dict[x]] = 1
-        xs_mapped = torch.tensor(data[i][0]).unsqueeze(dim=0)
+        xs_mapped_1 = torch.zeros(1, len(iprs_dict))
+        xs = data[i][0]
+        for x in xs:
+            xs_mapped_1[0][iprs_dict[x]] = 1
+        xs_mapped_2 = torch.tensor(data[i][1]).unsqueeze(dim=0)
+        xs_mapped = torch.cat([xs_mapped_1, xs_mapped_2], dim=-1)
         ys_mapped = torch.zeros(1, len(terms_dict))
-        ys = data[i][1]
+        ys = data[i][2]
         for y in ys:
             try:
                 ys_mapped[0][terms_dict[y]] = 1
             except:
                 pass
         if len(neg):
-            accessions = data[i][2].strip(';').split('; ')
+            accessions = data[i][3].strip(';').split('; ')
             for accession in accessions:
                 try:
                     negs = neg[accession]
                     for n in negs:
-                        try:
-                            ys_mapped[0][terms_dict[n]] = -1
-                        except:
-                            pass
+                        all_negs = go.get_descendants(n)
+                        for all_neg in all_negs:
+                            try:
+                                ys_mapped[0][terms_dict[all_neg]] = -1
+                            except:
+                                pass
                 except:
                     pass
+            pos_count += (ys_mapped == 1).sum()
+            neg_count += (ys_mapped == -1).sum()
+            unl_count += (ys_mapped == 0).sum()
         X.append(xs_mapped)
         Y.append(ys_mapped)
+    if len(neg):
+        print(f'P: {pos_count}, N: {neg_count}, U: {unl_count}')
     return torch.cat(X, dim=0), torch.cat(Y, dim=0)
 
 def validate(model, loader, device, verbose):
@@ -248,7 +258,7 @@ def parse_args(args=None):
     parser.add_argument('--dataset', default='mf', type=str)
     # Tunable
     parser.add_argument('--bs', default=256, type=int)
-    parser.add_argument('--lr', default=0.0001, type=float)
+    parser.add_argument('--lr', default=0.001, type=float)
     parser.add_argument('--wd', default=0, type=float)
     parser.add_argument('--do', default=0.2, type=float)
     parser.add_argument('--prior', default=0.0001, type=float)
