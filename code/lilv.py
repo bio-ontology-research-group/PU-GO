@@ -10,6 +10,9 @@ from utils import Ontology
 from evaluate import evaluate
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import average_precision_score
+from sklearn.metrics import precision_recall_curve
+from warnings import filterwarnings
+filterwarnings('ignore')
 
 def seed_everything(seed):
     random.seed(seed)
@@ -41,7 +44,7 @@ class DeepGOPU(torch.nn.Module):
         self.do = torch.nn.Dropout(do)
         self.prior = prior
         self.pu = pu
-        self.fc_1 = torch.nn.Linear(len(iprs_dict) + 200, emb_dim)
+        self.fc_1 = torch.nn.Linear(1280, emb_dim)
         self.fc_2 = torch.nn.Linear(emb_dim, len(terms_dict))
         self.lmbda = lmbda
 
@@ -79,7 +82,7 @@ class DeepGOPU(torch.nn.Module):
         u_0 = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * unl_label).sum() / unl_label.sum()
         if neg_label.sum() > 0:
             u_1 = - (torch.log(1 - torch.sigmoid(pred) + 1e-10) * neg_label).sum() / neg_label.sum()
-            u = (u_0 + lmbda * u_1) / 2
+            u = (u_0 + lmbda * u_1) / (1 + lmbda)
         else:
             u = u_0
         if u > self.prior * p_below:
@@ -110,6 +113,8 @@ class DeepGOPU(torch.nn.Module):
         return pos + neg
 
     def forward(self, X, Y):
+        # mid = torch.nn.functional.leaky_relu(self.do(self.fc_1(X[:, :len(iprs_dict)])))
+        # X_pred = self.fc_2(torch.cat([mid, X[:, len(iprs_dict):]], dim=-1))
         X_pred = self.fc_2(torch.nn.functional.leaky_relu(self.do(self.fc_1(X))))
         if self.pu == 0:
             return self.pn_loss(X_pred, Y)
@@ -119,6 +124,8 @@ class DeepGOPU(torch.nn.Module):
             return self.pur_loss(X_pred, Y)
         
     def predict(self, X):
+        # mid = torch.nn.functional.leaky_relu(self.do(self.fc_1(X[:, :len(iprs_dict)])))
+        # return torch.sigmoid(self.fc_2(torch.cat([mid, X[:, len(iprs_dict):]], dim=-1)))
         return torch.sigmoid(self.fc_2(torch.nn.functional.leaky_relu(self.do(self.fc_1(X)))))
 
 def read_neg(root):
@@ -144,9 +151,9 @@ def read_data(root):
 
     go = Ontology(cfg.root + 'go.obo', with_rels=True)
 
-    train_data = pd.read_pickle(root + 'train_data.pkl')[['interpros', cfg.dataset + '_dl2vec', 'prop_annotations', 'accessions']]
-    valid_data = pd.read_pickle(root + 'valid_data.pkl')[['interpros', cfg.dataset + '_dl2vec', 'prop_annotations']]
-    test_data = pd.read_pickle(root + 'test_data.pkl')[['interpros', cfg.dataset + '_dl2vec', 'prop_annotations']]
+    train_data = pd.read_pickle(root + 'train_data.pkl')[['esm', cfg.dataset + '_dl2vec', 'prop_annotations', 'accessions']]
+    valid_data = pd.read_pickle(root + 'valid_data.pkl')[['esm', cfg.dataset + '_dl2vec', 'prop_annotations']]
+    test_data = pd.read_pickle(root + 'test_data.pkl')[['esm', cfg.dataset + '_dl2vec', 'prop_annotations']]
 
     neg = read_neg(cfg.root)
 
@@ -163,12 +170,13 @@ def name2idx(data, terms_dict, iprs_dict, go, neg=[]):
     neg_count = 0
     unl_count = 0
     for i in range(len(data)):
-        xs_mapped_1 = torch.zeros(1, len(iprs_dict))
-        xs = data[i][0]
-        for x in xs:
-            xs_mapped_1[0][iprs_dict[x]] = 1
-        xs_mapped_2 = torch.tensor(data[i][1]).unsqueeze(dim=0)
-        xs_mapped = torch.cat([xs_mapped_1, xs_mapped_2], dim=-1)
+        xs_mapped = torch.tensor(data[i][0]).unsqueeze(dim=0)
+        # xs_mapped_1 = torch.zeros(1, len(iprs_dict))
+        # xs = data[i][0]
+        # for x in xs:
+        #     xs_mapped_1[0][iprs_dict[x]] = 1
+        # xs_mapped_2 = torch.tensor(data[i][1]).unsqueeze(dim=0)
+        # xs_mapped = torch.cat([xs_mapped_1, xs_mapped_2], dim=-1)
         ys_mapped = torch.zeros(1, len(terms_dict))
         ys = data[i][2]
         for y in ys:
@@ -210,9 +218,12 @@ def validate(model, loader, device, verbose):
             pred = model.predict(X)
             preds.append(pred)
             labels.append(Y)
-    aupr = round(average_precision_score(torch.cat(labels, dim=0).cpu().flatten(), torch.cat(preds, dim=0).cpu().flatten()), 4)
-    print(f'#Valid# AUPR: {aupr}')
-    return aupr
+    # pdb.set_trace()
+    precisions, recalls, thresholds = precision_recall_curve(torch.cat(labels, dim=0).cpu().flatten(), torch.cat(preds, dim=0).cpu().flatten())
+    # ap = round(average_precision_score(torch.cat(labels, dim=0).cpu().flatten(), torch.cat(preds, dim=0).cpu().flatten()), 4)
+    fmax = round(max(2 * (precisions * recalls) / (precisions + recalls)), 4)
+    print(f'#Valid# Fmax: {fmax}')
+    return fmax
 
 def test(model, loader, device, verbose, test_data, terms_dict, go):
     if verbose == 1:
@@ -245,9 +256,9 @@ def test(model, loader, device, verbose, test_data, terms_dict, go):
             if go_id in terms_dict:
                 scores[terms_dict[go_id]] = score
     
-    auc = round(roc_auc_score(torch.cat(labels, dim=0).cpu().flatten(), torch.tensor(results).flatten()), 4)
-    aupr = round(average_precision_score(torch.cat(labels, dim=0).cpu().flatten(), torch.tensor(results).flatten()), 4)
-    print(f'#Test# AUC: {auc}, AUPR: {aupr}')
+    # auc = round(roc_auc_score(torch.cat(labels, dim=0).cpu().flatten(), torch.tensor(results).flatten()), 4)
+    # aupr = round(average_precision_score(torch.cat(labels, dim=0).cpu().flatten(), torch.tensor(results).flatten()), 4)
+    # print(f'#Test# AUC: {auc}, AUPR: {aupr}')
 
     test_data['preds'] = results
     return test_data
@@ -310,7 +321,7 @@ if __name__ == '__main__':
     model = DeepGOPU(cfg.emb_dim, terms_dict, iprs_dict, cfg.do, cfg.prior, cfg.pu, cfg.lmbda)
     model = model.to(device)
     tolerance = cfg.tolerance
-    max_aupr = 0
+    max_fmax = 0
     # min_loss = 100000
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.wd)
     for epoch in range(cfg.max_epochs):
@@ -331,9 +342,9 @@ if __name__ == '__main__':
         print(f'Loss: {avg_loss}')
         if (epoch + 1) % cfg.valid_interval == 0:
             model.eval()
-            aupr = validate(model, valid_dataloader, device, cfg.verbose)
-            if aupr > max_aupr:
-                max_aupr = aupr
+            fmax = validate(model, valid_dataloader, device, cfg.verbose)
+            if fmax > max_fmax:
+                max_fmax = fmax
                 tolerance = cfg.tolerance
             else:
                 tolerance -= 1
