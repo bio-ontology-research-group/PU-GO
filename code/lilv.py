@@ -266,7 +266,7 @@ def test(model, loader, device, verbose, test_data, terms_dict, go):
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', default='../new_data/', type=str)
-    parser.add_argument('--dataset', default='mf', type=str)
+    parser.add_argument('--dataset', default='cc', type=str)
     # Tunable
     parser.add_argument('--bs', default=256, type=int)
     parser.add_argument('--lr', default=0.001, type=float)
