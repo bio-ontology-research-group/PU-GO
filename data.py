@@ -100,28 +100,6 @@ def main(data_root, go_file, old_data_file, new_data_file):
         
         print(f'Train/Valid/Test proteins for {ont} {len(train_df)}/{len(valid_df)}/{len(test_df)}')
 
-def add_expressions(df):
-    mapping = {}
-    with open ('data/human/uniprot_ensg2.tsv') as f:
-        for line in f:
-            it = line.strip().split('\t')
-            mapping[it[3]] = it[0]
-    exps = {}
-    with open('data/human/E-MTAB-5214-query-results.tsv') as f:
-        for line in f:
-            if not line.startswith('ENS'):
-                continue
-            it = line.strip().split('\t', -1)
-            exps[it[0]] = list(map(float, [x if x!='' else '0' for x in it[2:]]))
-    data = []
-    for row in df.itertuples():
-        it = torch.zeros((53,), dtype=torch.float32)
-        if row.proteins in mapping:
-            val = exps[mapping[row.proteins]]
-            it[:len(val)] = torch.FloatTensor(val)
-        data.append(it)
-    df['expressions'] = data
-    return df
 
 if __name__ == '__main__':
     main()
