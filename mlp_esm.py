@@ -12,8 +12,6 @@ from torch.utils.data import DataLoader, IterableDataset, TensorDataset
 from itertools import cycle
 import math
 from aminoacids import to_onehot, MAXLEN
-from dgl.nn import GraphConv
-import dgl
 from torch_utils import FastTensorDataLoader
 import csv
 from torch.optim.lr_scheduler import MultiStepLR
@@ -45,7 +43,7 @@ from functools import partial
 def main(data_root, ont, model_name, batch_size, epochs, load, device):
     go_file = f'{data_root}/go-basic.obo'
     model_file = f'{data_root}/{ont}/{model_name}.th'
-    out_file = f'{data_root}/{ont}/predictions_cafa_{model_name}.pkl'
+    out_file = f'{data_root}/{ont}/predictions_{model_name}.pkl'
 
     go = Ontology(go_file, with_rels=True)
     loss_func = nn.BCELoss()
@@ -76,8 +74,6 @@ def main(data_root, ont, model_name, batch_size, epochs, load, device):
     best_loss = 10000.0
     if not load:
         print('Training the model')
-        log_file = open(f'{data_root}/train_logs.tsv', 'w')
-        logger = csv.writer(log_file, delimiter='\t')
         for epoch in range(epochs):
             net.train()
             train_loss = 0
@@ -114,7 +110,6 @@ def main(data_root, ont, model_name, batch_size, epochs, load, device):
                 valid_loss /= valid_steps
                 roc_auc = compute_roc(valid_labels, preds)
                 print(f'Epoch {epoch}: Loss - {train_loss}, Valid loss - {valid_loss}, AUC - {roc_auc}')
-                logger.writerow([epoch, train_loss, valid_loss, roc_auc])
             if valid_loss < best_loss:
                 best_loss = valid_loss
                 print('Saving model')
@@ -234,7 +229,7 @@ def load_data(data_root, ont):
     
     train_df = pd.read_pickle(f'{data_root}/{ont}/train_data.pkl')
     valid_df = pd.read_pickle(f'{data_root}/{ont}/valid_data.pkl')
-    test_df = pd.read_pickle(f'{data_root}/cafa.pkl')
+    test_df = pd.read_pickle(f'{data_root}/{ont}/test_data.pkl')
 
     train_data = get_data(train_df, terms_dict)
     valid_data = get_data(valid_df, terms_dict)

@@ -30,7 +30,7 @@ logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 def main(data_root, ont):
     train_data_file = f'data/{ont}/train_data.pkl'
     valid_data_file = f'{data_root}/{ont}/valid_data.pkl'
-    test_data_file = f'{data_root}/cafa.pkl'
+    test_data_file = f'{data_root}/{ont}/test_data.pkl'
     terms_file = f'{data_root}/{ont}/terms.pkl'
     
     go_rels = Ontology(f'data/go-basic.obo', with_rels=True)
@@ -50,71 +50,72 @@ def main(data_root, ont):
     prot_index = {}
     for i, row in enumerate(train_df.itertuples()):
         prot_index[row.proteins] = i
+
     prot_ac_index = {}
     for i, row in enumerate(train_df.itertuples()):
         prot_ac_index[row.accessions[0]] = i
 
-    dsets = {'train': train_df, 'valid': valid_df, 'cafa': test_df}
+    dsets = {'train': train_df, 'valid': valid_df, 'test': test_df}
     
     # BLAST Similarity (Diamond)
-    for dset in ('valid', 'cafa'):
+    for dset in ('test',):
         diamond_scores_file = f'{data_root}/{ont}/{dset}_diamond.res'
         diamond_scores = {}
         with open(diamond_scores_file) as f:
             for line in f:
                 it = line.strip().split()
-                if dset != 'cafa' and it[0] == it[1]: # Ignore same proteins (for train)
+                if it[0] == it[1]: # Ignore same proteins (for train)
                     continue
                 if it[0] not in diamond_scores:
                     diamond_scores[it[0]] = {}
                 diamond_scores[it[0]][it[1]] = float(it[2])
 
-        scores_file = f'{data_root}/{ont}/{dset}_foldseek.m8'
-        scores = {}
-        with open(scores_file) as f:
-            for line in f:
-                it = line.strip().split()
-                if dset != 'cafa' and it[0] == it[1]: # Ignore same proteins (for train)
-                    continue
-                p1, p2 = it[0].split('.')[0], it[1].split('.')[0]
-                if p1 not in scores:
-                    scores[p1] = {}
-                scores[p1][p2] = float(it[2])
+        # scores_file = f'{data_root}/{ont}/{dset}_foldseek.m8'
+        # scores = {}
+        # with open(scores_file) as f:
+        #     for line in f:
+        #         it = line.strip().split()
+        #         if it[0] == it[1]: # Ignore same proteins (for train)
+        #             continue
+        #         p1, p2 = it[0].split('.')[0], it[1].split('.')[0]
+        #         if p1 not in scores:
+        #             scores[p1] = {}
+        #         scores[p1][p2] = float(it[2])
 
-        fold_preds = []
-        print(f'Preds for {dset}')
-        df = dsets[dset]
-        for i, row in enumerate(df.itertuples()):
-            annots = {}
-            prop_annots = {}
-            prot_id = row.accessions[0]
-            if prot_id in scores:
-                sim_prots = scores[prot_id]
-                allgos = set()
-                total_score = 0.0
-                for p_id, score in sim_prots.items():
-                    if p_id in prot_ac_index:
-                        allgos |= annotations[prot_ac_index[p_id]]
-                        total_score += score
-                allgos = list(sorted(allgos))
-                sim = np.zeros(len(allgos), dtype=np.float32)
-                for j, go_id in enumerate(allgos):
-                    s = 0.0
-                    for p_id, score in sim_prots.items():
-                        if p_id in prot_ac_index and go_id in annotations[prot_ac_index[p_id]]:
-                            s += score
-                    sim[j] = s / total_score
-                for go_id, score in zip(allgos, sim):
-                    annots[go_id] = score
-                prop_annots = annots.copy()
+        # fold_preds = []
+        # print(f'Preds for {dset}')
+        # df = dsets[dset]
+        # for i, row in enumerate(df.itertuples()):
+        #     annots = {}
+        #     prop_annots = {}
+        #     prot_id = row.accessions[0]
+        #     if prot_id in scores:
+        #         sim_prots = scores[prot_id]
+        #         allgos = set()
+        #         total_score = 0.0
+        #         for p_id, score in sim_prots.items():
+        #             if p_id in prot_ac_index:
+        #                 allgos |= annotations[prot_ac_index[p_id]]
+        #                 total_score += score
+        #         allgos = list(sorted(allgos))
+        #         sim = np.zeros(len(allgos), dtype=np.float32)
+        #         for j, go_id in enumerate(allgos):
+        #             s = 0.0
+        #             for p_id, score in sim_prots.items():
+        #                 if p_id in prot_ac_index and go_id in annotations[prot_ac_index[p_id]]:
+        #                     s += score
+        #             sim[j] = s / total_score
+        #         for go_id, score in zip(allgos, sim):
+        #             annots[go_id] = score
+        #         prop_annots = annots.copy()
 
-                for go_id, score in annots.items():
-                    for sup_go in go_rels.get_ancestors(go_id):
-                        if sup_go in prop_annots:
-                            prop_annots[sup_go] = max(prop_annots[sup_go], score)
-                        else:
-                            prop_annots[sup_go] = score
-            fold_preds.append(prop_annots)
+        #         for go_id, score in annots.items():
+        #             for sup_go in go_rels.get_ancestors(go_id):
+        #                 if sup_go in prop_annots:
+        #                     prop_annots[sup_go] = max(prop_annots[sup_go], score)
+        #                 else:
+        #                     prop_annots[sup_go] = score
+        #     fold_preds.append(prop_annots)
 
         diam_preds = []
         print(f'Diamond preds for {dset}')
@@ -151,18 +152,18 @@ def main(data_root, ont):
                             prop_annots[sup_go] = score
             diam_preds.append(prop_annots)
 
-        new_preds = []
-        for dp, fp in zip(diam_preds, fold_preds):
-            for go_id, score in fp.items():
-                if go_id in dp:
-                    dp[go_id] = max(dp[go_id], score)
-                else:
-                    dp[go_id] = score
-            new_preds.append(dp)
+        # new_preds = []
+        # for dp, fp in zip(diam_preds, fold_preds):
+        #     for go_id, score in fp.items():
+        #         if go_id in dp:
+        #             dp[go_id] = max(dp[go_id], score)
+        #         else:
+        #             dp[go_id] = score
+        #     new_preds.append(dp)
         
         df['diam_preds'] = diam_preds
-        df['fold_preds'] = fold_preds
-        df['diam_fold_preds'] = new_preds
+        # df['fold_preds'] = fold_preds
+        # df['diam_fold_preds'] = new_preds
         filename = f'{data_root}/{ont}/{dset}_data_diam.pkl'
         df.to_pickle(filename)
 

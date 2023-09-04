@@ -67,13 +67,13 @@ class Ontology(object):
 
     def calculate_ic(self, annots):
         self.ic = {}
-        with open('data/cafa5/IA.txt') as f:
-            for line in f:
-                it = line.strip().split('\t')
-                if len(it) == 2:
-                    self.ic[it[0]] = float(it[1])
-                    self.ic_norm = max(self.ic_norm, float(it[1]))
-        return
+        # with open('data/cafa5/IA.txt') as f:
+        #     for line in f:
+        #         it = line.strip().split('\t')
+        #         if len(it) == 2:
+        #             self.ic[it[0]] = float(it[1])
+        #             self.ic_norm = max(self.ic_norm, float(it[1]))
+        # return
         cnt = Counter()
         for x in annots:
             cnt.update(x)
