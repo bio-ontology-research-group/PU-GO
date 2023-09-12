@@ -75,7 +75,10 @@ def main(data_root, ont, model, combine, alpha, num_preds):
         for go_id, score in diam_df.iloc[i]['diam_preds'].items():
             if go_id in terms_dict:
                 diam_preds[terms_dict[go_id]] = score
-        preds = diam_preds * alpha + row.preds * (1 - alpha)
+        if combine:
+            preds = diam_preds * alpha + row.preds * (1 - alpha)
+        else:
+            preds = row.preds
         eval_preds.append(preds)
 
     labels = np.zeros((len(test_df), len(terms)), dtype=np.float32)

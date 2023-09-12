@@ -12,10 +12,10 @@ logging.basicConfig(level=logging.INFO)
 
 @ck.command()
 @ck.option(
-    '--swissprot-file', '-sf', default='data/uniprot_sprot_2023_01.dat.gz',
+    '--swissprot-file', '-sf', default='data/uniprot_sprot_2023_03.dat.gz',
     help='UniProt/SwissProt knowledgebase file in text format (archived)')
 @ck.option(
-    '--out-file', '-o', default='data/swissprot_exp_2023_01.pkl',
+    '--out-file', '-o', default='data/swissprot_exp_2023_03.pkl',
     help='Result file with a list of proteins, sequences and annotations')
 def main(swissprot_file, out_file):
     go = Ontology('data/go-basic.obo', with_rels=True)
@@ -72,8 +72,38 @@ def main(swissprot_file, out_file):
 
     df['esm2'] = esm2
     
+    interpro2go = {}
+    gos = set()
+    with open('data/interpro2go.txt') as f:
+        for line in f:
+            if line.startswith('!'):
+                continue
+            it = line.strip().split()
+            ipr_id = it[0].split(':')[1]
+            go_id = it[-1]
+            if not go.has_term(go_id):
+                continue
+            if ipr_id not in interpro2go:
+                interpro2go[ipr_id] = set()
+            interpro2go[ipr_id].add(go_id)
+            gos.add(go_id)
+
+    gos = list(gos)
+    gos_df = pd.DataFrame({'gos': gos})
+    gos_df.to_pickle('data/interpro_gos.pkl')
+    ipr2go = []
+    for i, row in enumerate(df.itertuples()):
+        prot_id = row.proteins
+        annots = set()
+        for ipr in row.interpros:
+            if ipr in interpro2go:
+                annots |= interpro2go[ipr]
+        ipr2go.append(annots)
+    df['interpro2go'] = ipr2go
+
     df.to_pickle(out_file)
     logging.info('Successfully saved %d proteins' % (len(df),) )
+
 
     
     
