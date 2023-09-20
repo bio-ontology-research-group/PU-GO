@@ -1,0 +1,15 @@
+name: deepgopu
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.8
+  - click
+  - JPype1=1.4.1
+  - pandas
+  - pytorch
+  - pytorch-cuda
+  - pip
+  - pip:
+      - mowl-borg>=0.2.0
