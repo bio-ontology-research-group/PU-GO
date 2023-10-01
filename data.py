@@ -18,10 +18,10 @@ logging.basicConfig(level=logging.INFO)
     '--go-file', '-gf', default='data/go-basic.obo',
     help='Gene Ontology file in OBO Format')
 @ck.option(
-    '--old-data-file', '-odf', default='data/swissprot_exp_2023_01.pkl',
+    '--old-data-file', '-odf', default='data/swissprot_exp_2023_01_negs.pkl',
     help='Uniprot KB, generated with uni2pandas.py')
 @ck.option(
-    '--new-data-file', '-ndf', default='data/swissprot_exp_2023_03.pkl',
+    '--new-data-file', '-ndf', default='data/swissprot_exp_2023_03_negs.pkl',
     help='Uniprot KB, generated with uni2pandas.py')
 def main(data_root, go_file, old_data_file, new_data_file):
     go = Ontology(go_file, with_rels=True)
