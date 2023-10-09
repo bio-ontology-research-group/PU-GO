@@ -1,5 +1,6 @@
 import click as ck
 import pandas as pd
+import pickle as pkl
 from utils import Ontology
 import numpy as np
 from sklearn.metrics import roc_curve, auc, precision_recall_curve
@@ -17,14 +18,24 @@ import csv
 from multiprocessing import Pool, get_context
 from functools import partial
 import sys
+import os
 from tqdm import tqdm
 import math
+import time
 
+
+from evaluate_new import test
 from mowl.utils.random import seed_everything
+
+from clearml import Task, Logger
 
 import logging
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+handler = logging.StreamHandler(sys.stdout)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+
 
 class Residual(nn.Module):
     def __init__(self, fn):
@@ -144,25 +155,33 @@ class DeepGOPU(nn.Module):
         
         return loss
 
-    def pun_loss_multi(self, data, labels, p=1):
+    def pun_loss_multi(self, data, labels, w_labels, p=1):
         pred = self.dgpro(data)
 
+        p = min(p, 1)
+        threshold = 1 - p
         pos_label = (labels == 1).float()
-        unl_label = (labels == 0).float()
-        neg_label = (labels == -1).float()
+        not_pos_label = (labels != 1).float()
+        unl_label = (w_labels >= -threshold).float() * not_pos_label
+        neg_label = (w_labels < -threshold).float() + (labels == -1).float()
 
         #set unl_label values to False with probability p https://arxiv.org/pdf/2308.00279.pdf
-        unl_label = unl_label * (th.rand(unl_label.shape).to(self.device) < p).float()
-        #pos_label = pos_label * (th.rand(pos_label.shape).to(self.device) < p).float()
-        
+        # unl_label = unl_label * (th.rand(unl_label.shape).to(self.device) < p).float()
+
+        # set unl_label to negatives based on esm similarity distance
+                
         
         p_above = - (F.logsigmoid(pred) * pos_label).sum(dim=0) / pos_label.sum()
         p_below = - (F.logsigmoid(-pred) * pos_label).sum(dim=0) / pos_label.sum()
-        u_below = - (F.logsigmoid(-pred) * unl_label).sum(dim=0) / unl_label.sum()
 
+        if unl_label.sum() > 0:
+            u_below = - (F.logsigmoid(-pred) * unl_label).sum(dim=0) / unl_label.sum()
+        else:
+            u_below = 0
+            
         if neg_label.sum() > 0:
             n_below = - (F.logsigmoid(-pred) * neg_label).sum(dim=0) / neg_label.sum()
-            gamma = 0.01 #self.gamma 
+            gamma = self.gamma#0.01 #self.gamma 
         else:
             n_below = 0
             gamma = 0
@@ -196,7 +215,7 @@ class DeepGOPU(nn.Module):
         return self.prior * p_above + th.relu(- self.prior * p_below + u)
                                                                  
     
-    def forward(self, data, labels, p=1):
+    def forward(self, data, labels, w_labels, p=1):
         # return self.pu_ranking_loss(data, labels)
         if self.loss_type == 'pu':
             return self.pu_loss(data, labels)
@@ -205,7 +224,7 @@ class DeepGOPU(nn.Module):
         elif self.loss_type == "pun":
             return self.pun_loss(data, labels)
         elif self.loss_type == "pun_multi":
-            return self.pun_loss_multi(data, labels, p=p)
+            return self.pun_loss_multi(data, labels, w_labels, p=p)
         else:
             raise NotImplementedError
 
@@ -224,7 +243,7 @@ class DeepGOPU(nn.Module):
     '--ont', '-ont', default='mf',
     help='Prediction model')
 @ck.option(
-    '--model-name', '-mn', default='dgpu',
+    '--model-name', '-mn', default='dgpu_sample_prior',
     help='Prediction model')
 @ck.option(
     '--batch-size', '-bs', default=256,
@@ -245,11 +264,15 @@ class DeepGOPU(nn.Module):
 @ck.option('--max_lr', '-lr', default=1e-4)
 @ck.option(
     '--load', '-ld', is_flag=True, help='Load Model?')
+@ck.option("--alpha-test", "-at", default = 0.5)
+@ck.option("--combine", "-c", is_flag=True)
 @ck.option(
     '--device', '-d', default='cuda',
     help='Device')
-def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probability, probability_rate, alpha, loss_type, max_lr, load, device):
+def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probability, probability_rate, alpha, loss_type, max_lr, load, alpha_test, combine, device):
 
+    
+    
     log_file = f"result_{ont}.log"
     params = f"ont: {ont},"
     params += f" batch_size: {batch_size},"
@@ -259,6 +282,10 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probabili
     params += f" p_rate: {probability_rate},"
     params += f" alpha: {alpha},"
 
+
+    task = Task.init(project_name="deepgopu", task_name=f"{ont}_{model_name}")
+    cml_logger = task.get_logger()
+    
     
     with open(log_file, "a") as f:
         f.write(params + "\n")
@@ -277,20 +304,20 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probabili
 
     
         
-    train_features, train_labels, terms_count = train_data
-    valid_features, valid_labels, _ = valid_data
-    test_features, test_labels, _ = test_data
+    train_features, train_labels, train_w_labels, terms_count = train_data
+    valid_features, valid_labels, valid_w_labels, _ = valid_data
+    test_features, test_labels, test_w_labels, _ = test_data
 
 
     net = DeepGOPU(n_terms, prior, gamma, loss_type, terms_count).to(device)
     
 
     train_loader = FastTensorDataLoader(
-        train_features, train_labels, batch_size=batch_size, shuffle=True)
+        train_features, train_labels, train_w_labels, batch_size=batch_size, shuffle=True)
     valid_loader = FastTensorDataLoader(
-        valid_features, valid_labels, batch_size=batch_size, shuffle=False)
+        valid_features, valid_labels, valid_w_labels, batch_size=batch_size, shuffle=False)
     test_loader = FastTensorDataLoader(
-        test_features, test_labels, batch_size=batch_size, shuffle=False)
+        test_features, test_labels, test_w_labels, batch_size=batch_size, shuffle=False)
 
     valid_labels = valid_labels.detach().cpu().numpy()
     test_labels = test_labels.detach().cpu().numpy()
@@ -300,12 +327,13 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probabili
 
  
     
-    bce = nn.BCEWithLogitsLoss()
+    bce = nn.BCEWithLogitsLoss(reduction='none')
     optimizer = th.optim.Adam(net.parameters(), lr=max_lr)
     scheduler = MultiStepLR(optimizer, milestones=[1, 3,], gamma=0.1)
     min_lr = max_lr /100
     scheduler = CyclicLR(optimizer, base_lr=min_lr, max_lr=max_lr, step_size_up=20, cycle_momentum=False)
     best_loss = 10000.0
+    best_fmax = 0.0
     tolerance = 5
     curr_tolerance = tolerance
         
@@ -315,25 +343,50 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probabili
             probability += probability_rate
             net.train()
             train_loss = 0
+            train_pu_loss = 0
+            train_bce_loss = 0
             train_steps = int(math.ceil(len(train_labels) / batch_size))
             with ck.progressbar(length=train_steps, show_pos=True) as bar:
-                for batch_features, batch_labels in train_loader:
+                for batch_features, batch_labels , batch_w_labels in train_loader:
                     bar.update(1)
                     batch_features = batch_features.to(device)
                     batch_labels = batch_labels.to(device)
-                    pu_loss = net(batch_features, batch_labels, probability)
+                    batch_w_labels = batch_w_labels.to(device)
+                    
+                    pu_loss = net(batch_features, batch_labels, batch_w_labels, p=probability)
                     logits = net.logits(batch_features)
 
-                    batch_labels = (batch_labels == 1).float()
-                    bce_loss = bce(logits, batch_labels)
+                    pos_labels = (batch_labels == 1)
+                    # unl_labels = (batch_labels != 1)
+                    # neg_labels = (batch_labels == -1)
+
+                    bce_loss = bce(logits, pos_labels.float()).mean()
+                    # w_bce_loss = (bce_loss[pos_labels]).mean() + (bce_loss[unl_labels] * batch_w_labels[unl_labels]).mean()
+
+                    
                     
                     loss = alpha*pu_loss + (1-alpha)*bce_loss
+
+                    
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
                     train_loss += loss.detach().item()
-            
+                    train_pu_loss += pu_loss.detach().item()
+                    train_bce_loss += bce_loss.detach().item()
+                    
+                    
             train_loss /= train_steps
+            train_pu_loss /= train_steps
+            train_bce_loss /= train_steps
+
+
+            if cml_logger:
+                cml_logger.report_scalar(title="Loss evolution", series="PU Loss", iteration=epoch+1, value=train_pu_loss)
+                cml_logger.report_scalar(title="Loss evolution", series="BCE Loss", iteration=epoch+1, value=train_bce_loss)
+                cml_logger.report_scalar(title="Loss evolution", series="Total Loss", iteration=epoch+1, value=train_loss)
+            
+            
             
             print('Validation')
             net.eval()
@@ -342,26 +395,35 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probabili
                 valid_loss = 0
                 preds = []
                 with ck.progressbar(length=valid_steps, show_pos=True) as bar:
-                    for batch_features, batch_labels in valid_loader:
+                    for batch_features, batch_labels, batch_w_labels in valid_loader:
                         bar.update(1)
                         batch_features = batch_features.to(device)
                         batch_labels = batch_labels.to(device)
-                        batch_loss = net(batch_features, batch_labels)
+                        batch_w_labels = batch_w_labels.to(device)
+                        batch_loss = net(batch_features, batch_labels, batch_w_labels)
                         logits = net.logits(batch_features)
 
                         batch_labels = (batch_labels == 1).float()
-                        bce_loss = bce(logits, batch_labels)
+                        bce_loss = bce(logits, batch_labels).mean()
                         batch_loss += bce_loss
                         
                         valid_loss += batch_loss.detach().item()
                         logits = net.predict(batch_features)
                         preds = np.append(preds, logits.detach().cpu().numpy())
                 valid_loss /= valid_steps
-                roc_auc = compute_roc(valid_labels, preds)
-                print(f'Epoch {epoch}: Loss - {train_loss}, Valid loss - {valid_loss}, AUC - {roc_auc}')
+                #roc_auc = compute_roc(valid_labels, preds)
+                fmax = compute_fmax(valid_labels, preds)
+
+                if cml_logger:
+                    cml_logger.report_scalar(title="Valid FMax evolution", series="FMax", iteration=epoch+1, value=fmax)
+                    cml_logger.report_scalar(title="Loss evolution", series="Valid Loss", iteration=epoch+1, value=valid_loss)
+
+                print(f'Epoch {epoch}: Loss - {train_loss}, Valid loss - {valid_loss}, FMax - {fmax}')
                 
-            if valid_loss < best_loss and epoch > 1:
-                best_loss = valid_loss
+            #if valid_loss < best_loss and epoch > 1:
+            if fmax > best_fmax:
+                best_fmax = fmax
+                #best_loss = valid_loss
                 print('Saving model')
                 th.save(net.state_dict(), model_file)
                 curr_tolerance = tolerance
@@ -384,15 +446,16 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probabili
         test_loss = 0
         preds = []
         with ck.progressbar(length=test_steps, show_pos=True) as bar:
-            for batch_features, batch_labels in test_loader:
+            for batch_features, batch_labels, batch_w_labels in test_loader:
                 bar.update(1)
                 batch_features = batch_features.to(device)
                 batch_labels = batch_labels.to(device)
-                batch_loss = net(batch_features, batch_labels)
+                batch_w_labels = batch_w_labels.to(device)
+                batch_loss = net(batch_features, batch_labels, batch_w_labels)
                 logits = net.logits(batch_features)
 
                 batch_labels = (batch_labels == 1).float()
-                bce_loss = bce(logits, batch_labels)
+                bce_loss = bce(logits, batch_labels).mean()
                 batch_loss += bce_loss
                 
                 test_loss += batch_loss.detach().cpu().item()
@@ -421,6 +484,12 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probabili
     test_df.to_pickle(out_file)
 
 
+    test(data_root, ont, model_name, combine, alpha_test, False, cml_logger)
+
+    cml_logger.flush()
+    
+
+    
     
 def propagate_annots(preds, go, terms_dict):
     idx, preds = preds
@@ -451,6 +520,12 @@ def compute_roc(labels, preds):
 
     return roc_auc
 
+def compute_fmax(labels, preds):
+    labels[labels == -1] = 0
+    precisions, recalls, thresholds = precision_recall_curve(labels.flatten(), preds.flatten())
+    fmax = round(np.max(2 * (precisions * recalls) / (precisions + recalls + 1e-10)), 3)
+    return fmax
+    
 def load_data(data_root, ont, go):
     terms_df = pd.read_pickle(f'{data_root}/{ont}/terms.pkl')
     terms = terms_df['gos'].values.flatten()
@@ -461,13 +536,13 @@ def load_data(data_root, ont, go):
     valid_df = pd.read_pickle(f'{data_root}/{ont}/valid_data.pkl')
     test_df = pd.read_pickle(f'{data_root}/{ont}/test_data.pkl')
                         
-    train_data = get_data(train_df, terms_dict, go, data_root)
-    valid_data = get_data(valid_df, terms_dict, go, data_root)
-    test_data = get_data(test_df, terms_dict, go, data_root)
+    train_data = get_data(train_df, terms_dict, go, ont, "train", data_root = data_root)
+    valid_data = get_data(valid_df, terms_dict, go, ont, "valid", data_root = data_root)
+    test_data = get_data(test_df, terms_dict, go, ont, "test", data_root = data_root)
 
     return terms_dict, train_data, valid_data, test_data, test_df
 
-def get_data(df, terms_dict, go_ont, data_root="data"):
+def get_data(df, terms_dict, go_ont, ont, subset, data_root = "data"):
     data = th.zeros((len(df), 5120), dtype=th.float32)
     labels = th.zeros((len(df), len(terms_dict)), dtype=th.float32)
 
@@ -546,8 +621,60 @@ def get_data(df, terms_dict, go_ont, data_root="data"):
     num_negs = (labels == -1).sum()
 
     print(f"Avg number of negatives {num_negs / len(df)}")
+
+    # computes matrix of esm-distance
+
+    w_labels_file = f"{data_root}/{ont}/{subset}_weighted_labels.pkl"
+
+    if not os.path.exists(w_labels_file):
     
-    return data, labels, terms_count
+        device = "cuda"
+        logger.info("Computing ESM distance matrix")
+        esm_vectors = df["esm2"].values.tolist()
+        esm_vectors = th.stack(esm_vectors)
+        eye_matrix = th.eye(len(esm_vectors))
+        dot_product_matrix = th.matmul(esm_vectors, esm_vectors.T)
+        dot_product_matrix.mul_(1 - eye_matrix) # remove diagonal
+        dot_product_matrix = th.softmax(dot_product_matrix, dim=1)
+        dot_product_matrix.mul_(1 - eye_matrix)
+
+    
+        dot_product_matrix = dot_product_matrix.to(device)
+        labels = labels
+        weighted_labels = th.zeros_like(labels).to(device)
+    
+    
+        mask_pos = (labels == 1).int()
+        mask_neg = (labels == -1).int()
+
+        # mask_pos = mask_pos.to(device)
+        mask_neg = mask_neg.to(device)
+
+        for i in tqdm(range(len(dot_product_matrix)), desc="Computing weighted labels"):
+            prot_similarities = dot_product_matrix[i].unsqueeze(1)
+        
+            w_labels = prot_similarities * mask_neg
+            w_labels = - w_labels.sum(dim=0)
+        
+            w_neg_labels = th.min(-mask_neg[i], w_labels)
+            mask_pos_i = mask_pos[i].to(device)
+            w_neg_labels *= (1 - mask_pos_i)
+            weighted_labels[i] = mask_pos_i + w_labels
+        
+    
+        # assert th.max(weighted_labels) <= 1, f"max value {th.max(weighted_labels)}"
+        # assert th.min(weighted_labels) >= -1, f"min value {th.min(weighted_labels)}"
+
+        weighted_labels = weighted_labels.cpu()
+
+        with open(w_labels_file, "wb") as f:
+            pkl.dump(weighted_labels, f)
+    else:
+        with open(w_labels_file, "rb") as f:
+            weighted_labels = pkl.load(f)
+
+        
+    return data, labels, weighted_labels, terms_count
 
 
 if __name__ == '__main__':

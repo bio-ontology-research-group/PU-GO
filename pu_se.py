@@ -161,9 +161,6 @@ class DeepGOPU(EmbeddingELModel):
         self.valid_features, self.valid_labels, _ = valid_data
         self.test_features, self.test_labels, _ = test_data
         
-
-        
-        
         self.data_root = data_root
         self.ont = ont
         self.go_ont = go_ont
@@ -181,23 +178,17 @@ class DeepGOPU(EmbeddingELModel):
         
         self.out_file = f'{data_root}/{ont}/predictions_{model_name}.pkl'
 
-
-
-        
         self.nb_classes = len(self.dataset.classes)
         self.nb_roles = len(self.dataset.object_properties)
         has_func_owl = self.dataset.object_properties.to_dict()["http://mowl/has_function"]
         self.has_func_id = self.dataset.object_properties.to_index_dict()[has_func_owl]
 
-        
         self.nb_gos = len(self.terms_dict)
 
         self.prior = prior
         self.gamma = gamma
 
-        
         self.loss_type = loss_type
-        
         
         max_count = max(self.terms_count.values())
         print(f"max_count: {max_count}")
@@ -462,7 +453,7 @@ class DeepGOPU(EmbeddingELModel):
                                 
                         valid_loss /= valid_steps
                         roc_auc = compute_roc(self.valid_labels, preds)
-                        print(f'Epoch {epoch}: PF Loss - {train_pf_loss}, EL Loss - {train_el_loss}, BCE Loss - {train_bce_loss}, Valid loss - {valid_loss}, AUC - {roc_auc}')
+                        print(f'Epoch {epoch}: PF Loss - {train_pf_loss:.6f}, EL Loss - {train_el_loss:.6f}, BCE Loss - {train_bce_loss:.6f}, Valid loss - {valid_loss:.6f}, AUC - {roc_auc:.6f}')
 
                     if valid_loss < best_loss and epoch > 1:
                         best_loss = valid_loss
@@ -683,15 +674,15 @@ def load_data(data_root, ont, go):
     test_df = pd.read_pickle(f'{data_root}/{ont}/test_data.pkl')
     logger.info(f"Read pickle files in {time.time() - start} seconds")
     
-    train_data = get_data(train_df, terms_dict, go)
-    valid_data = get_data(valid_df, terms_dict, go)
-    test_data = get_data(test_df, terms_dict, go)
+    train_data = get_data(train_df, terms_dict, go, data_root = data_root)
+    valid_data = get_data(valid_df, terms_dict, go, data_root = data_root)
+    test_data = get_data(test_df, terms_dict, go, data_root = data_root)
     end = time.time()
     logger.info(f"Data loaded in {end - start} seconds")
     
     return terms_dict, train_data, valid_data, test_data, test_df
 
-def get_data(df, terms_dict, go_ont):
+def get_data(df, terms_dict, go_ont, data_root="data/"):
     data = th.zeros((len(df), 5120), dtype=th.float32)
     labels = th.zeros((len(df), len(terms_dict)), dtype=th.float32)
 
@@ -727,7 +718,7 @@ def get_data(df, terms_dict, go_ont):
         
     go_terms = set(terms_dict.keys())
     # Loading negatives from GOA
-    goa_negs_file = "data/goa_negative_data.txt"
+    goa_negs_file = f"{data_root}/goa_negative_data.txt"
     negs = set()
     with open(goa_negs_file) as f:
         for line in f:
@@ -735,7 +726,7 @@ def get_data(df, terms_dict, go_ont):
             negs.add((prot, go))
 
     # Adding InterPro negatives
-    interpro_gos = pd.read_pickle("data/interpro_gos.pkl")
+    interpro_gos = pd.read_pickle(f"{data_root}/interpro_gos.pkl")
     ipr_gos = set(interpro_gos["gos"].values.flatten())
 
     

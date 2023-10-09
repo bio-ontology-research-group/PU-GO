@@ -17,6 +17,19 @@ import csv
 from torch.optim.lr_scheduler import MultiStepLR
 from multiprocessing import Pool
 from functools import partial
+import os
+import random
+
+def seed_everything(seed=42):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    th.manual_seed(seed)
+    th.cuda.manual_seed(seed)
+    th.cuda.manual_seed_all(seed)
+    th.backends.cudnn.deterministic = True
+    th.backends.cudnn.benchmark = False
+
 
 
 @ck.command()
@@ -38,9 +51,10 @@ from functools import partial
 @ck.option(
     '--load', '-ld', is_flag=True, help='Load Model?')
 @ck.option(
-    '--device', '-d', default='cuda:1',
+    '--device', '-d', default='cuda',
     help='Device')
 def main(data_root, ont, model_name, batch_size, epochs, load, device):
+    seed_everything(0)
     go_file = f'{data_root}/go-basic.obo'
     model_file = f'{data_root}/{ont}/{model_name}.th'
     out_file = f'{data_root}/{ont}/predictions_{model_name}.pkl'
@@ -204,7 +218,7 @@ class MLPBlock(nn.Module):
 
 class DGPROModel(nn.Module):
 
-    def __init__(self, nb_iprs, nb_gos, device, nodes=[5120,]):
+    def __init__(self, nb_iprs, nb_gos, device, nodes=[2048,]):
         super().__init__()
         self.nb_gos = nb_gos
         input_length = 5120
