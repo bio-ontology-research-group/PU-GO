@@ -283,8 +283,6 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probabili
     params += f" alpha: {alpha},"
 
 
-    task = Task.init(project_name="deepgopu", task_name=f"{ont}_{model_name}")
-    cml_logger = task.get_logger()
     
     
     with open(log_file, "a") as f:
@@ -294,8 +292,14 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probabili
     
     seed_everything(0)
     go_file = f'{data_root}/go-basic.obo'
+    model_name = f"{model_name}_prob{probability}_alpha{alpha}_gamma{gamma}"
     model_file = f'{data_root}/{ont}/{model_name}.th'
     out_file = f'{data_root}/{ont}/predictions_{model_name}.pkl'
+
+
+    task = Task.init(project_name="deepgopu-ibex", task_name=f"{ont}_{model_name}", reuse_last_task_id=False)
+    cml_logger = task.get_logger()
+
     
     go = Ontology(go_file, with_rels=True)
     terms_dict, train_data, valid_data, test_data, test_df = load_data(data_root, ont, go)
