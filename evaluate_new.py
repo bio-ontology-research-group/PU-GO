@@ -15,7 +15,7 @@ from scipy import sparse
 import math
 from utils import FUNC_DICT, Ontology, NAMESPACES, EXP_CODES
 from matplotlib import pyplot as plt
-import wandb
+
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 
 
