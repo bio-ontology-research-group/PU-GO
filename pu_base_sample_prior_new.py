@@ -27,7 +27,7 @@ import time
 from evaluate_new import test
 from mowl.utils.random import seed_everything
 
-from clearml import Task, Logger
+from clearml import Task
 
 import logging
 logger = logging.getLogger(__name__)
@@ -195,24 +195,6 @@ class DeepGOPU(nn.Module):
         return loss
 
 
-    def pu_ranking_loss(self, data, labels):
-        pred = self.dgpro(data)
-
-        pos_label = (labels == 1).float()
-        unl_label = (labels == 0).float()
-        neg_label = (labels == -1).float()
-
-        p_above = - (F.logsigmoid(pred) * pos_label).sum() / pos_label.sum()
-        p_below = - (th.log(1 - th.sigmoid(pred) + 1e-10) * pos_label).sum() / pos_label.sum()
-
-        u_0 = - F.logsigmoid((pred * pos_label).sum()/ pos_label.sum() - (pred*unl_label).sum() / unl_label.sum())
-        if neg_label.sum() > 0:
-            u_1 = - F.logsigmoid((pred * pos_label).sum()/ pos_label.sum() - (pred*neg_label).sum() / neg_label.sum())
-            u = (u_0 + self.lmbda * u_1) / (1 + self.lmbda)
-        else:
-            u = u_0
-
-        return self.prior * p_above + th.relu(- self.prior * p_below + u)
                                                                  
     
     def forward(self, data, labels, w_labels, p=1):
