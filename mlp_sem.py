@@ -327,8 +327,8 @@ class DeepGOPU(EmbeddingELModel):
 
                                 
                             # loss = self.beta * el_loss + (1-self.beta)*((1-self.alpha)*bce_loss + self.alpha * pf_loss)
-                            loss = el_loss + bce_loss
-                            # loss = alpha*pu_loss + (1-alpha)*bce_loss
+#                            loss = el_loss + bce_loss
+                            loss = alpha*el_loss + (1-alpha)*bce_loss
                             optimizer.zero_grad()
                             loss.backward()
                             optimizer.step()
