@@ -354,7 +354,7 @@ class DeepGOPU(EmbeddingELModel):
                                 batch_labels = batch_labels.to(self.device)
 
                                 mem_logits = th.sigmoid(module.pf_forward(batch_features))
-                                bce_loss = F.binary_cross_entropy(mem_logits, batch_labels)
+                                bce_loss = bce(mem_logits, batch_labels)
 
                                 valid_loss += bce_loss.detach().item()
                                 preds = np.append(preds, mem_logits.detach().cpu().numpy())
@@ -382,6 +382,7 @@ class DeepGOPU(EmbeddingELModel):
         test_loader = FastTensorDataLoader(self.test_features, self.test_labels, batch_size=self.batch_size, shuffle=False)
         logger.info("Loading models from disk...")
 
+        bce = nn.BCEWithLogitsLoss()
         for i, module in enumerate(self.modules):
             logger.info(f"Loading model {i+1}/{len(self.modules)}")
             sub_model_filepath = self.model_filepath.replace(".th", f"_{i+1}_of_{len(self.modules)}.th")
@@ -404,7 +405,7 @@ class DeepGOPU(EmbeddingELModel):
                         batch_labels = batch_labels.to(self.device)
                         
                         logits = th.sigmoid(module.pf_forward(batch_features))
-                        batch_loss = F.binary_cross_entropy(logits, batch_labels)
+                        batch_loss = bce(logits, batch_labels)
                         test_loss += batch_loss.detach().cpu().item()
                         
                         preds.append(logits.detach().cpu().numpy())
