@@ -29,8 +29,8 @@ from mowl.datasets import PathDataset
 from mowl.nn import ELEmModule, ELBoxModule, BoxSquaredELModule
 
 from mowl.utils.random import seed_everything
-
-
+from evaluate_sem import test
+import wandb
 import logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -92,6 +92,20 @@ class MLPBlock(nn.Module):
             x = self.dropout(x)
         return x
 
+class DGPROModel(nn.Module):
+    def __init__(self, nb_gos, nodes=[2048,]):
+        super().__init__()
+        self.nb_gos = nb_gos
+        input_length = 5120
+        net = []
+        for hidden_dim in nodes:
+            net.append(MLPBlock(input_length, hidden_dim))
+            net.append(Residual(MLPBlock(hidden_dim, hidden_dim)))
+            input_length = hidden_dim
+        self.net = nn.Sequential(*net)
+        
+    def forward(self, features):
+        return self.net(features)
 
 class PFModule(nn.Module):
     def __init__(self, el_module, esm_dim, el_dim, nb_classes, nb_roles, terms_dict, has_func_id):
@@ -105,10 +119,7 @@ class PFModule(nn.Module):
         self.module_name = el_module
         self._set_module(el_module)
 
-        projection = []
-        projection.append(MLPBlock(esm_dim, el_dim))
-        projection.append(Residual(MLPBlock(el_dim, el_dim)))
-        self.projection = nn.Sequential(*projection)
+        self.projection = DGPROModel(nb_classes)
         
         self.terms_dict = terms_dict
         self.go_terms_ids = th.tensor([list(self.terms_dict.values())], dtype=th.long)
@@ -148,7 +159,6 @@ class PFModule(nn.Module):
             offset_embed = th.abs(offset_embed).mean(dim=1).view(1, -1)
             membership = membership + offset_embed
                                             
-        #membership = th.sigmoid(membership)
         return membership
 
     
@@ -216,62 +226,6 @@ class DeepGOPU(EmbeddingELModel):
         self.modules = nn.ModuleList(modules)
         logger.info(f"Number of models created: {len(modules)}")
     
-    def pu_loss(self, data, labels):
-        preds = self.dgpro(data)
-
-        pos_label = (labels == 1).float()
-        unl_label = (labels != 1).float()
-
-        p_above = - (F.logsigmoid(preds)*pos_label).sum() / pos_label.sum()
-        p_below = - (F.logsigmoid(-preds)*pos_label).sum() / pos_label.sum()
-        u_below = - (F.logsigmoid(-preds)*unl_label).sum() / unl_label.sum()
-
-        
-        # print(f"p_above: {p_above}, p_below: {p_below}, u_below: {u_below}")
-        
-        loss = self.prior * p_above + th.relu(u_below - self.prior*p_below  + self.prior/2)
-        return loss
-
-
-    def pu_loss_multi(self, data, labels, p=1):
-        preds = self.dgpro(data)
-
-        pos_label = (labels == 1).float()
-        unl_label = (labels != 1).float()
-
-        unl_label = unl_label * (th.rand(unl_label.shape).to(self.device) < p).float()
-        
-        p_above = - (F.logsigmoid(preds)*pos_label).sum(dim=0) / pos_label.sum()
-        p_below = - (F.logsigmoid(-preds)*pos_label).sum(dim=0) / pos_label.sum()
-        u_below = - (F.logsigmoid(-preds)*unl_label).sum(dim=0) / unl_label.sum()
-
-        loss = self.priors * p_above + th.relu(u_below - self.priors*p_below + self.priors/2)
-        loss = loss.sum()
-        return loss
-
-    def pun_loss(self, data, labels):
-        pred = self.dgpro(data)
-
-        pos_label = (labels == 1).float()
-        unl_label = (labels == 0).float()
-        neg_label = (labels == -1).float()
-
-        p_above = - (F.logsigmoid(pred) * pos_label).sum() / pos_label.sum()
-        p_below = - (F.logsigmoid(-pred) * pos_label).sum() / pos_label.sum()
-        u_below = - (F.logsigmoid(-pred) * unl_label).sum() / unl_label.sum()
-
-        if neg_label.sum() > 0:
-            n_below = - (F.logsigmoid(-pred) * neg_label).sum() / neg_label.sum()
-            gamma = self.gamma
-        else:
-            n_below = 0
-            gamma = 0
-
-        
-        loss = self.prior * p_above + th.relu(gamma * (1 - self.prior) * n_below +
-                                              (1 - gamma) * (u_below - self.prior * p_below + self.prior / 2))
-        
-        return loss
 
     def pun_loss_multi(self, pred, labels, p=1):
         
@@ -279,18 +233,14 @@ class DeepGOPU(EmbeddingELModel):
         unl_label = (labels == 0).float()
         neg_label = (labels == -1).float()
 
-        #set unl_label values to False with probability p https://arxiv.org/pdf/2308.00279.pdf
-        unl_label = unl_label * (th.rand(unl_label.shape).to(self.device) < p).float()
-        #pos_label = pos_label * (th.rand(pos_label.shape).to(self.device) < p).float()
-        
-        
+                        
         p_above = - (F.logsigmoid(pred) * pos_label).sum(dim=0) / pos_label.sum()
         p_below = - (F.logsigmoid(-pred) * pos_label).sum(dim=0) / pos_label.sum()
         u_below = - (F.logsigmoid(-pred) * unl_label).sum(dim=0) / unl_label.sum()
 
         if neg_label.sum() > 0:
             n_below = - (F.logsigmoid(-pred) * neg_label).sum(dim=0) / neg_label.sum()
-            gamma = 0.01 #self.gamma 
+            gamma = self.gamma #0.01 #self.gamma 
         else:
             n_below = 0
             gamma = 0
@@ -386,11 +336,12 @@ class DeepGOPU(EmbeddingELModel):
                 sub_model_file = self.model_filepath.replace(".th", f"_{i+1}_of_{len(self.modules)}.th")
                 module.train()
                 module = module.to(self.device)
-                best_loss = 10000.0    
+                best_loss = 10000.0
+                best_fmax = 0.0
                 for epoch in range(epochs):
                     self.probability += self.probability_rate
                     module.train()
-                    train_pf_loss = 0
+                    train_pu_loss = 0
                     train_el_loss = 0
                     train_bce_loss = 0
                     train_steps = int(math.ceil(len(self.train_labels) / self.batch_size))
@@ -401,37 +352,35 @@ class DeepGOPU(EmbeddingELModel):
                             batch_labels = batch_labels.to(self.device)
                             mem_logits = module.pf_forward(batch_features)
                             
-                            pf_loss = self.pun_loss_multi(mem_logits, batch_labels, p=self.probability)
-
+                            pu_loss = self.pun_loss_multi(mem_logits, batch_labels)
                             batch_labels = (batch_labels == 1).float()
                             bce_loss = bce(mem_logits, batch_labels)
                             
                             el_loss = 0
                             for gci_name, dl in self.el_dls.items():
-                                # el_loss += module.el_forward(next(dl).to(self.device), gci_name).mean() #* self.el_dls_weights[gci_name]
-
+                                
                                 gci_batch = next(dl).to(self.device)
                                 pos_gci = module.el_forward(gci_batch, gci_name).mean()
                                 neg_idxs = np.random.choice(self.nb_classes, size=len(gci_batch), replace=True)
                                 neg_batch = th.tensor(neg_idxs, dtype=th.long, device=self.device)
                                 neg_data = th.cat((gci_batch[:, :2], neg_batch.unsqueeze(1)), dim=1)
                                 neg_gci = module.el_forward(neg_data, gci_name).mean()# * el_dls_weights[gci_name]
-                                el_loss += -F.logsigmoid(-pos_gci + neg_gci - 0.1).mean()
+                                margin = 0 
+                                el_loss += -F.logsigmoid(-pos_gci + neg_gci - margin).mean()
 
-
-
-                                
-                            loss = self.beta * el_loss + (1-self.beta)*((1-self.alpha)*bce_loss + self.alpha * pf_loss) 
-                            # loss = alpha*pu_loss + (1-alpha)*bce_loss
+                            loss = self.beta * el_loss + (1-self.beta)*((1-self.alpha)*bce_loss + self.alpha * pu_loss)
+                                                        
                             optimizer.zero_grad()
                             loss.backward()
                             optimizer.step()
-                            train_pf_loss += pf_loss.item()
+                            train_pu_loss += pu_loss.item()
                             train_el_loss += el_loss.item()
                             train_bce_loss += bce_loss.item()
-                    train_pf_loss /= train_steps
+                    train_pu_loss /= train_steps
                     train_el_loss /= train_steps
                     train_bce_loss /= train_steps
+
+                    wandb.log({"train_pu_loss": train_pu_loss, "train_el_loss": train_el_loss, "train_bce_loss": train_bce_loss})
                     
                     print('Validation')
                     module.eval()
@@ -452,11 +401,12 @@ class DeepGOPU(EmbeddingELModel):
                                 preds = np.append(preds, mem_logits.detach().cpu().numpy())
                                 
                         valid_loss /= valid_steps
-                        roc_auc = compute_roc(self.valid_labels, preds)
-                        print(f'Epoch {epoch}: PF Loss - {train_pf_loss:.6f}, EL Loss - {train_el_loss:.6f}, BCE Loss - {train_bce_loss:.6f}, Valid loss - {valid_loss:.6f}, AUC - {roc_auc:.6f}')
+                        valid_fmax = compute_fmax(self.valid_labels, preds)
+                        wandb.log({"valid_loss": valid_loss, "valid fmax": valid_fmax})
+                        print(f'Epoch {epoch}: PF Loss - {train_pu_loss:.6f}, EL Loss - {train_el_loss:.6f}, BCE Loss - {train_bce_loss:.6f}, Valid loss - {valid_loss:.6f}, Valid Fmax - {valid_fmax:.6f}')
 
-                    if valid_loss < best_loss and epoch > 1:
-                        best_loss = valid_loss
+                    if valid_fmax > best_fmax:
+                        best_fmax = valid_fmax
                         print('Saving model')
                         th.save(module.state_dict(), sub_model_file)
                         curr_tolerance = tolerance
@@ -469,7 +419,7 @@ class DeepGOPU(EmbeddingELModel):
 
                     scheduler.step()
 
-    def test(self):
+    def predict(self):
         test_loader = FastTensorDataLoader(self.test_features, self.test_labels, batch_size=self.batch_size, shuffle=False)
         logger.info("Loading models from disk...")
 
@@ -539,9 +489,6 @@ class DeepGOPU(EmbeddingELModel):
         self.test_df.to_pickle(self.out_file)
 
 
-
-
-        
 @ck.command()
 @ck.option(
     '--data-root', '-dr', default='data',
@@ -556,7 +503,7 @@ class DeepGOPU(EmbeddingELModel):
     "--num-models", "-nmodels", default = 1
     )
 @ck.option(
-    '--model-name', '-mn', default='dgpu',
+    '--model-name', '-mn', default='dgpu-pu-base',
     help='Prediction model')
 @ck.option(
     '--batch-size', '-bs', default=256,
@@ -567,23 +514,24 @@ class DeepGOPU(EmbeddingELModel):
 @ck.option(
     '--prior', '-p', default=1e-4,
     help='Prior')
-@ck.option("--gamma", '-g', default = 0.5)
-@ck.option(
-    '--probability', '-prob', default=0.0,
-    help='Initial probability of chosing unlabeled samples')
+@ck.option("--gamma", '-g', default = 0.01)
+@ck.option('--probability', '-prob', default=0.0, help='Initial probability of chosing unlabeled samples')
 @ck.option("--probability-rate", '-prate', default = 0.01)
-@ck.option("--alpha", '-a', default = 0.5, help="Weight of the unlabeled loss")
-@ck.option("--beta", '-b', default = 0.5)
+@ck.option("--alpha", '-a', default = 0.5, help="Weight of the BCE loss")
+@ck.option("--beta", '-b', default = 0.1, help="Weight of the EL loss. Using best one from semantic baseline")
 @ck.option('--loss_type', '-loss', default='pu', type=ck.Choice(['pu', 'pun', 'pu_multi', 'pun_multi']))
 @ck.option('--max_lr', '-lr', default=1e-4)
+@ck.option('--alpha_test', '-at', default=0.5)
+@ck.option("--combine", '-c', is_flag=True)
 @ck.option(
     '--load', '-ld', is_flag=True, help='Load Model?')
 @ck.option(
     '--device', '-d', default='cuda',
     help='Device')
-def main(data_root, ont, el_model, num_models, model_name, batch_size, epochs, prior, gamma, probability, probability_rate, alpha, beta, loss_type, max_lr, load, device):
+def main(data_root, ont, el_model, num_models, model_name, batch_size, epochs, prior, gamma, probability, probability_rate, alpha, beta, loss_type, max_lr, alpha_test, combine, load, device):
 
-    train_file = f'{data_root}/{ont}/train.owl'
+    
+    train_file = f'{data_root}/{ont}/train_normalized.owl'
     valid_file = f'{data_root}/{ont}/valid.owl'
     test_file = f'{data_root}/{ont}/test.owl'
     
@@ -606,10 +554,30 @@ def main(data_root, ont, el_model, num_models, model_name, batch_size, epochs, p
     
     seed_everything(0)
 
+    
+    
     go_file = f'{data_root}/go-basic.obo'
     go = Ontology(go_file, with_rels=True)
     pf_data = load_data(data_root, ont, go)
 
+    model_name = f"{model_name}_{ont}_{el_model}_prob{probability}_alpha{alpha}_gamma{gamma}"
+
+    sim = "_sim" if "sim" in data_root else ""
+    wandb_logger = wandb.init(project="dgpu_se", name=model_name, group = ont + sim +"_class_prior")
+    wandb.config.update({"root": data_root,
+                         "ont": ont,
+                         "el_model": el_model,
+                         "num_models": num_models,
+                         "model_name": model_name,
+                         "batch_size": batch_size,
+                         "prior": prior,
+                         "gamma": gamma,
+                         "probability": probability,
+                         "p_rate": probability_rate,
+                         "alpha": alpha,
+                         "beta": beta,
+                         "loss_type": loss_type,
+                         "max_lr": max_lr})
     
     model_file = f'{data_root}/{ont}/{model_name}.th'
     logger.info(f"Creating mOWL dataset")
@@ -624,10 +592,15 @@ def main(data_root, ont, el_model, num_models, model_name, batch_size, epochs, p
 
     model = DeepGOPU(data_root, model_name, load, ont, pf_data, go, el_model, num_models, max_lr, probability, probability_rate, alpha, beta, prior, gamma, loss_type, dataset, el_dim, batch_size, device = device, model_filepath = model_file)
 
+    wandb.watch(model.modules)
+    
     model.train(epochs = epochs)
-    model.test()
+    model.predict()
+
+    for agg in ["min", "max", "mean", "median"]:
+        test(data_root, ont, model_name, False, alpha_test, False, agg,  wandb_logger)
                 
-            
+    wandb.finish()
     
 def propagate_annots(preds, go, terms_dict):
     idx, preds = preds
@@ -657,6 +630,13 @@ def compute_roc(labels, preds):
     roc_auc = auc(fpr, tpr)
 
     return roc_auc
+
+
+def compute_fmax(labels, preds):
+    labels[labels == -1] = 0
+    precisions, recalls, thresholds = precision_recall_curve(labels.flatten(), preds.flatten())
+    fmax = round(np.max(2 * (precisions * recalls) / (precisions + recalls + 1e-10)), 3)
+    return fmax
 
 
 def load_data(data_root, ont, go):
@@ -700,19 +680,19 @@ def get_data(df, terms_dict, go_ont, data_root="data/"):
                 labels[i, g_id] = 1
                 terms_count[go_id] += 1
 
-        for go_id in row.neg_annotations:
-            if go_id in terms_dict:
-                g_id = terms_dict[go_id]
-                labels[i, g_id] = -1
+        # for go_id in row.neg_annotations:
+            # if go_id in terms_dict:
+                # g_id = terms_dict[go_id]
+                # labels[i, g_id] = -1
 
-                if go_id in children:
-                    descendants = children[go_id]
-                else:
-                    descendants = go_ont.get_term_set(go_id)
-                    children[go_id] = descendants
+                # if go_id in children:
+                    # descendants = children[go_id]
+                # else:
+                    # descendants = go_ont.get_term_set(go_id)
+                    # children[go_id] = descendants
                     
-                neg_idx = [terms_dict[go] for go in descendants if go in terms_dict]
-                labels[i, neg_idx] = -1
+                # neg_idx = [terms_dict[go] for go in descendants if go in terms_dict]
+                # labels[i, neg_idx] = -1
                 
                 
         
@@ -726,8 +706,8 @@ def get_data(df, terms_dict, go_ont, data_root="data/"):
             negs.add((prot, go))
 
     # Adding InterPro negatives
-    interpro_gos = pd.read_pickle(f"{data_root}/interpro_gos.pkl")
-    ipr_gos = set(interpro_gos["gos"].values.flatten())
+    # interpro_gos = pd.read_pickle(f"{data_root}/interpro_gos.pkl")
+    # ipr_gos = set(interpro_gos["gos"].values.flatten())
 
     
     

@@ -20,7 +20,10 @@ import sys
 from tqdm import tqdm
 import math
 
+from evaluate_new import test
 from mowl.utils.random import seed_everything
+
+from clearml import Task
 
 import logging
 logger = logging.getLogger(__name__)
@@ -104,13 +107,12 @@ class DeepGOPU(nn.Module):
         return loss
 
 
-    def pu_loss_multi(self, data, labels, p=1):
+    def pu_loss_multi(self, data, labels):
         preds = self.dgpro(data)
 
         pos_label = (labels == 1).float()
         unl_label = (labels != 1).float()
 
-        unl_label = unl_label * (th.rand(unl_label.shape).to(self.device) < p).float()
         
         p_above = - (F.logsigmoid(preds)*pos_label).sum(dim=0) / pos_label.sum()
         p_below = - (F.logsigmoid(-preds)*pos_label).sum(dim=0) / pos_label.sum()
@@ -144,15 +146,15 @@ class DeepGOPU(nn.Module):
         
         return loss
 
-    def pun_loss_multi(self, data, labels, p=1):
+    def pun_loss_multi(self, data, labels):
         pred = self.dgpro(data)
 
         pos_label = (labels == 1).float()
         unl_label = (labels == 0).float()
         neg_label = (labels == -1).float()
 
-        #set unl_label values to False with probability p https://arxiv.org/pdf/2308.00279.pdf
-        unl_label = unl_label * (th.rand(unl_label.shape).to(self.device) < p).float()
+        #set unl_label values to False with probability p https://arxiv.org/pdf/2308.00279.pdf -> now in pu_base_sample_prior_new.py
+        #unl_label = unl_label * (th.rand(unl_label.shape).to(self.device) < p).float()
         #pos_label = pos_label * (th.rand(pos_label.shape).to(self.device) < p).float()
         
         
@@ -162,7 +164,7 @@ class DeepGOPU(nn.Module):
 
         if neg_label.sum() > 0:
             n_below = - (F.logsigmoid(-pred) * neg_label).sum(dim=0) / neg_label.sum()
-            gamma = 0.01 #self.gamma 
+            gamma = self.gamma # 0.01
         else:
             n_below = 0
             gamma = 0
@@ -176,27 +178,9 @@ class DeepGOPU(nn.Module):
         return loss
 
 
-    def pu_ranking_loss(self, data, labels):
-        pred = self.dgpro(data)
-
-        pos_label = (labels == 1).float()
-        unl_label = (labels == 0).float()
-        neg_label = (labels == -1).float()
-
-        p_above = - (F.logsigmoid(pred) * pos_label).sum() / pos_label.sum()
-        p_below = - (th.log(1 - th.sigmoid(pred) + 1e-10) * pos_label).sum() / pos_label.sum()
-
-        u_0 = - F.logsigmoid((pred * pos_label).sum()/ pos_label.sum() - (pred*unl_label).sum() / unl_label.sum())
-        if neg_label.sum() > 0:
-            u_1 = - F.logsigmoid((pred * pos_label).sum()/ pos_label.sum() - (pred*neg_label).sum() / neg_label.sum())
-            u = (u_0 + self.lmbda * u_1) / (1 + self.lmbda)
-        else:
-            u = u_0
-
-        return self.prior * p_above + th.relu(- self.prior * p_below + u)
                                                                  
     
-    def forward(self, data, labels, p=1):
+    def forward(self, data, labels):
         # return self.pu_ranking_loss(data, labels)
         if self.loss_type == 'pu':
             return self.pu_loss(data, labels)
@@ -205,7 +189,7 @@ class DeepGOPU(nn.Module):
         elif self.loss_type == "pun":
             return self.pun_loss(data, labels)
         elif self.loss_type == "pun_multi":
-            return self.pun_loss_multi(data, labels, p=p)
+            return self.pun_loss_multi(data, labels)
         else:
             raise NotImplementedError
 
@@ -236,27 +220,20 @@ class DeepGOPU(nn.Module):
     '--prior', '-p', default=1e-4,
     help='Prior')
 @ck.option("--gamma", '-g', default = 0.5)
-@ck.option(
-    '--probability', '-prob', default=0.0,
-    help='Initial probability of chosing unlabeled samples')
-@ck.option("--probability-rate", '-prate', default = 0.01)
 @ck.option("--alpha", '-a', default = 0.5, help="Weight of the unlabeled loss")
 @ck.option('--loss_type', '-loss', default='pu', type=ck.Choice(['pu', 'pun', 'pu_multi', 'pun_multi']))
 @ck.option('--max_lr', '-lr', default=1e-4)
-@ck.option(
-    '--load', '-ld', is_flag=True, help='Load Model?')
-@ck.option(
-    '--device', '-d', default='cuda',
-    help='Device')
-def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probability, probability_rate, alpha, loss_type, max_lr, load, device):
+@ck.option('--load', '-ld', is_flag=True, help='Load Model?')
+@ck.option("--alpha-test", "-at", default=0.5)
+@ck.option("--combine", "-c", is_flag=True)
+@ck.option('--device', '-d', default='cuda', help='Device')
+def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, loss_type, max_lr, load, alpha_test, combine, device):
 
     log_file = f"result_{ont}.log"
     params = f"ont: {ont},"
     params += f" batch_size: {batch_size},"
     params += f" prior: {prior},"
     params += f" gamma: {gamma},"
-    params += f" probability: {probability},"
-    params += f" p_rate: {probability_rate},"
     params += f" alpha: {alpha},"
 
     
@@ -267,8 +244,14 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probabili
     
     seed_everything(0)
     go_file = f'{data_root}/go-basic.obo'
+    model_name = f"{model_name}_alpha{alpha}_gamma{gamma}"
     model_file = f'{data_root}/{ont}/{model_name}.th'
     out_file = f'{data_root}/{ont}/predictions_{model_name}.pkl'
+
+    task = Task.init(project_name="deepgopu", task_name=f"{ont}_{model_name}", reuse_last_task_id=False)
+    cml_logger = task.get_logger()
+
+
     
     go = Ontology(go_file, with_rels=True)
     terms_dict, train_data, valid_data, test_data, test_df = load_data(data_root, ont, go)
@@ -306,22 +289,24 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probabili
     min_lr = max_lr /100
     scheduler = CyclicLR(optimizer, base_lr=min_lr, max_lr=max_lr, step_size_up=20, cycle_momentum=False)
     best_loss = 10000.0
+    best_fmax = 0
     tolerance = 5
     curr_tolerance = tolerance
         
     if not load:
         print('Training the model')
         for epoch in range(epochs):
-            probability += probability_rate
             net.train()
             train_loss = 0
+            train_pu_loss = 0
+            train_bce_loss = 0
             train_steps = int(math.ceil(len(train_labels) / batch_size))
             with ck.progressbar(length=train_steps, show_pos=True) as bar:
                 for batch_features, batch_labels in train_loader:
                     bar.update(1)
                     batch_features = batch_features.to(device)
                     batch_labels = batch_labels.to(device)
-                    pu_loss = net(batch_features, batch_labels, probability)
+                    pu_loss = net(batch_features, batch_labels)
                     logits = net.logits(batch_features)
 
                     batch_labels = (batch_labels == 1).float()
@@ -332,9 +317,19 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probabili
                     loss.backward()
                     optimizer.step()
                     train_loss += loss.detach().item()
+                    train_pu_loss += pu_loss.detach().item()
+                    train_bce_loss += bce_loss.detach().item()
             
             train_loss /= train_steps
+            train_pu_loss /= train_steps
+            train_bce_loss /= train_steps
+
             
+            if cml_logger:
+                cml_logger.report_scalar(title="Loss evolution", series="PU Loss", iteration=epoch+1, value=train_pu_loss)
+                cml_logger.report_scalar(title="Loss evolution", series="BCE Loss", iteration=epoch+1, value=train_bce_loss)
+                cml_logger.report_scalar(title="Loss evolution", series="Total Loss", iteration=epoch+1, value=train_loss)
+
             print('Validation')
             net.eval()
             with th.no_grad():
@@ -357,11 +352,18 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probabili
                         logits = net.predict(batch_features)
                         preds = np.append(preds, logits.detach().cpu().numpy())
                 valid_loss /= valid_steps
-                roc_auc = compute_roc(valid_labels, preds)
-                print(f'Epoch {epoch}: Loss - {train_loss}, Valid loss - {valid_loss}, AUC - {roc_auc}')
-                
-            if valid_loss < best_loss and epoch > 1:
-                best_loss = valid_loss
+                #roc_auc = compute_roc(valid_labels, preds)
+                fmax = compute_fmax(valid_labels, preds)
+                if cml_logger:
+                    cml_logger.report_scalar(title="Valid FMax evolution", series="FMax", iteration=epoch+1, value=fmax)
+                    cml_logger.report_scalar(title="Loss evolution", series="Valid Loss", iteration=epoch+1, value=valid_loss)
+
+                print(f'Epoch {epoch}: Loss - {train_loss}, Valid loss - {valid_loss}, FMax - {fmax}')
+
+            # if valid_loss < best_loss and epoch > 1:
+            if fmax > best_fmax:
+                best_fmax = fmax
+                # best_loss = valid_loss
                 print('Saving model')
                 th.save(net.state_dict(), model_file)
                 curr_tolerance = tolerance
@@ -420,6 +422,9 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probabili
 
     test_df.to_pickle(out_file)
 
+    test(data_root, ont, model_name, combine, alpha_test, False, cml_logger)
+    cml_logger.flush()
+
 
     
 def propagate_annots(preds, go, terms_dict):
@@ -450,6 +455,12 @@ def compute_roc(labels, preds):
     roc_auc = auc(fpr, tpr)
 
     return roc_auc
+
+def compute_fmax(labels, preds):
+    labels[labels == -1] = 0
+    precisions, recalls, thresholds = precision_recall_curve(labels.flatten(), preds.flatten())
+    fmax = round(np.max(2 * (precisions * recalls) / (precisions + recalls + 1e-10)), 3)
+    return fmax
 
 def load_data(data_root, ont, go):
     terms_df = pd.read_pickle(f'{data_root}/{ont}/terms.pkl')

@@ -264,9 +264,6 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, probabili
     params += f" p_rate: {probability_rate},"
     params += f" alpha: {alpha},"
 
-
-    
-    
     with open(log_file, "a") as f:
         f.write(params + "\n")
 

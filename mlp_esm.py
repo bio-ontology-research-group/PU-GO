@@ -40,7 +40,7 @@ def seed_everything(seed=42):
     '--ont', '-ont', default='mf',
     help='Prediction model')
 @ck.option(
-    '--model-name', '-mn', default='mlp_esm',
+    '--model-name', '-mn', default='dgpu-mlp',
     help='Prediction model')
 @ck.option(
     '--batch-size', '-bs', default=37,

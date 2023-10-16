@@ -16,6 +16,7 @@ from org.semanticweb.owlapi.model import IRI
 from org.semanticweb.owlapi.formats import OWLXMLDocumentFormat
 from java.util import HashSet
 from tqdm import tqdm
+import os
 import logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -25,14 +26,13 @@ def get_prot_iri(org, accession):
 
 @ck.command()
 @ck.option(
-    '--go-file', '-ont', default='data/go-plus.owl',
+    '--go-file', '-file', default='data/go-plus.owl',
     help='Ontology file (GO by default)')
 @ck.option(
     "--ont", "-ont", type=ck.Choice(["mf", "bp", "cc"]), default="mf")
 def main(go_file, ont):
 
-    
-    data_root = "data"
+    data_root = os.path.dirname(go_file)
     out_dir = os.path.join(data_root, ont)
 
     train_pf_file = os.path.join(out_dir, 'train_data.pkl')

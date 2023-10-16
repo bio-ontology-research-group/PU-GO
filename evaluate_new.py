@@ -16,6 +16,7 @@ import math
 from utils import FUNC_DICT, Ontology, NAMESPACES, EXP_CODES
 from matplotlib import pyplot as plt
 
+
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 
 
@@ -152,38 +153,39 @@ def test(data_root, ont, model, combine, alpha, tex_output, cml_logger):
     print(f'AUPR: {aupr:0.3f}')
     print(f'AVGIC: {avgic:0.3f}')
 
-    # wandb.log({
-    #     "fmax": fmax,
-    #     "smin": smin,
-    #     "aupr": aupr,
-    #     "avg_auc": avg_auc,
-    #     "wfmax": wfmax,
-    #     "avgic": avgic,
-    #     "threshold": tmax,
-    #     "w_threshold": wtmax,
-    #     "spec": fmax_spec_match,
-    #     "combine": combine,
+    cml_logger.log({
+        "fmax": fmax,
+        "smin": smin,
+        "aupr": aupr,
+        "avg_auc": avg_auc,
+        "wfmax": wfmax,
+        "avgic": avgic,
+        "threshold": tmax,
+        "w_threshold": wtmax,
+        "spec": fmax_spec_match,
+        "combine": combine,
         
         
-    # })
+    })
 
 
 
     
     # wandb.finish()
 
-    cml_logger.report_single_value("fmax", fmax)
-    cml_logger.report_single_value("smin", smin)
-    cml_logger.report_single_value("aupr", aupr)
-    cml_logger.report_single_value("avg_auc", avg_auc)
-    cml_logger.report_single_value("wfmax", wfmax)
-    cml_logger.report_single_value("avgic", avgic)
-    cml_logger.report_single_value("threshold", tmax)
-    cml_logger.report_single_value("w_threshold", wtmax)
-    cml_logger.report_single_value("spec", fmax_spec_match)
-    cml_logger.report_single_value("combine", combine)
+    
+    # cml_logger.report_single_value("fmax", fmax)
+    # cml_logger.report_single_value("smin", smin)
+    # cml_logger.report_single_value("aupr", aupr)
+    # cml_logger.report_single_value("avg_auc", avg_auc)
+    # cml_logger.report_single_value("wfmax", wfmax)
+    # cml_logger.report_single_value("avgic", avgic)
+    # cml_logger.report_single_value("threshold", tmax)
+    # cml_logger.report_single_value("w_threshold", wtmax)
+    # cml_logger.report_single_value("spec", fmax_spec_match)
+    # cml_logger.report_single_value("combine", combine)
 
-    cml_logger.flush()
+    # cml_logger.flush()
     
 
     
