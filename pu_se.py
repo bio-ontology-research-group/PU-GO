@@ -395,7 +395,7 @@ class DeepGOPU(EmbeddingELModel):
                                 batch_labels = batch_labels.to(self.device)
 
                                 mem_logits = th.sigmoid(module.pf_forward(batch_features))
-                                bce_loss = F.binary_cross_entropy(mem_logits, batch_labels)
+                                bce_loss = bce(mem_logits, batch_labels)
 
                                 valid_loss += bce_loss.detach().item()
                                 preds = np.append(preds, mem_logits.detach().cpu().numpy())
@@ -423,6 +423,8 @@ class DeepGOPU(EmbeddingELModel):
         test_loader = FastTensorDataLoader(self.test_features, self.test_labels, batch_size=self.batch_size, shuffle=False)
         logger.info("Loading models from disk...")
 
+        bce = nn.BCEWithLogitsLoss()
+        
         for i, module in enumerate(self.modules):
             logger.info(f"Loading model {i+1}/{len(self.modules)}")
             sub_model_filepath = self.model_filepath.replace(".th", f"_{i+1}_of_{len(self.modules)}.th")
@@ -445,7 +447,7 @@ class DeepGOPU(EmbeddingELModel):
                         batch_labels = batch_labels.to(self.device)
                         
                         logits = th.sigmoid(module.pf_forward(batch_features))
-                        batch_loss = F.binary_cross_entropy(logits, batch_labels)
+                        batch_loss = bce(logits, batch_labels)
                         test_loss += batch_loss.detach().cpu().item()
                         
                         preds.append(logits.detach().cpu().numpy())
@@ -563,7 +565,7 @@ def main(data_root, ont, el_model, num_models, model_name, batch_size, epochs, p
     model_name = f"{model_name}_{ont}_{el_model}_prob{probability}_alpha{alpha}_gamma{gamma}"
 
     sim = "_sim" if "sim" in data_root else ""
-    wandb_logger = wandb.init(project="dgpu_se", name=model_name, group = ont + sim +"_class_prior")
+    wandb_logger = wandb.init(project="dgpu_se" + sim, name=model_name, group = ont +"_class_prior")
     wandb.config.update({"root": data_root,
                          "ont": ont,
                          "el_model": el_model,
