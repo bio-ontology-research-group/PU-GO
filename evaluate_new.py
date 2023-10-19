@@ -20,7 +20,7 @@ from matplotlib import pyplot as plt
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 
 
-def test(data_root, ont, model, combine, alpha, tex_output, cml_logger):
+def test(data_root, ont, model, combine, alpha, tex_output, wandb_logger):
     
     train_data_file = f'{data_root}/{ont}/train_data.pkl'
     valid_data_file = f'{data_root}/{ont}/valid_data.pkl'
@@ -153,7 +153,7 @@ def test(data_root, ont, model, combine, alpha, tex_output, cml_logger):
     print(f'AUPR: {aupr:0.3f}')
     print(f'AVGIC: {avgic:0.3f}')
 
-    cml_logger.log({
+    wandb_logger.log({
         "fmax": fmax,
         "smin": smin,
         "aupr": aupr,
@@ -168,25 +168,6 @@ def test(data_root, ont, model, combine, alpha, tex_output, cml_logger):
         
     })
 
-
-
-    
-    # wandb.finish()
-
-    
-    # cml_logger.report_single_value("fmax", fmax)
-    # cml_logger.report_single_value("smin", smin)
-    # cml_logger.report_single_value("aupr", aupr)
-    # cml_logger.report_single_value("avg_auc", avg_auc)
-    # cml_logger.report_single_value("wfmax", wfmax)
-    # cml_logger.report_single_value("avgic", avgic)
-    # cml_logger.report_single_value("threshold", tmax)
-    # cml_logger.report_single_value("w_threshold", wtmax)
-    # cml_logger.report_single_value("spec", fmax_spec_match)
-    # cml_logger.report_single_value("combine", combine)
-
-    # cml_logger.flush()
-    
 
     
     if tex_output:

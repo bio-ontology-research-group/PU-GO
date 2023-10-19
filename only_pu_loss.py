@@ -23,7 +23,7 @@ import math
 from evaluate_new import test
 from mowl.utils.random import seed_everything
 
-from clearml import Task
+import wandb
 
 import logging
 logger = logging.getLogger(__name__)
@@ -64,7 +64,6 @@ class DGPROModel(nn.Module):
             net.append(Residual(MLPBlock(hidden_dim, hidden_dim)))
             input_length = hidden_dim
         net.append(nn.Linear(input_length, nb_gos))
-        #net.append(nn.Sigmoid())
         self.net = nn.Sequential(*net)
         
     def forward(self, features):
@@ -85,10 +84,7 @@ class DeepGOPU(nn.Module):
         # self.priors = [self.prior*x for x in terms_count.values()]
         self.priors = [min(x/max_count, self.prior) for x in terms_count.values()]
         self.priors = th.tensor(self.priors, dtype=th.float32, requires_grad=False).to(device)
-        self.weights = [1/max_count for x in terms_count.values()]
-        self.weights = [1 for x in terms_count.values()]
-        self.weights = th.tensor(self.weights, dtype=th.float32, requires_grad=False).to(device)
-        
+                        
         
     def pu_loss(self, data, labels):
         preds = self.dgpro(data)
@@ -172,7 +168,7 @@ class DeepGOPU(nn.Module):
         margin = 0 #- self.priors / 16
         loss = self.priors * p_above + th.relu(gamma * (1 - self.priors) * n_below +
                                               (1 - gamma) * (u_below - self.priors * p_below + margin))
-        loss = self.weights * loss
+        
         loss = loss.sum()
         assert loss >= 0, f"loss: {loss}"
         return loss
@@ -248,8 +244,22 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
     model_file = f'{data_root}/{ont}/{model_name}.th'
     out_file = f'{data_root}/{ont}/predictions_{model_name}.pkl'
 
-    task = Task.init(project_name="deepgopu", task_name=f"{ont}_{model_name}", reuse_last_task_id=False)
-    cml_logger = task.get_logger()
+
+    wandb_logger = wandb.init(project="dgpu-just-pu", name= model_name, group=f"{ont}_{loss_type}")
+    wandb.config.update({
+        "root": data_root,
+        "ont": ont,
+        "model_name": model_name,
+        "batch_size": batch_size,
+        "epochs": epochs,
+        "prior": prior,
+        "gamma": gamma,
+        "alpha": alpha,
+        "loss_type": loss_type,
+        "max_lr": max_lr,
+        "combine": combine,
+    })
+        
 
 
     
@@ -310,26 +320,23 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
                     logits = net.logits(batch_features)
 
                     batch_labels = (batch_labels == 1).float()
-                    bce_loss = bce(logits, batch_labels)
-                    
-                    loss = alpha*pu_loss + (1-alpha)*bce_loss
+                    #bce_loss = bce(logits, batch_labels)
+                    loss = pu_loss
+                    # loss = alpha*pu_loss + (1-alpha)*bce_loss
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
                     train_loss += loss.detach().item()
                     train_pu_loss += pu_loss.detach().item()
-                    train_bce_loss += bce_loss.detach().item()
+                    
             
             train_loss /= train_steps
             train_pu_loss /= train_steps
             train_bce_loss /= train_steps
 
+            wandb.log({"train_loss": train_loss, "train_pu_loss": train_pu_loss, "train_bce_loss": train_bce_loss})
             
-            if cml_logger:
-                cml_logger.report_scalar(title="Loss evolution", series="PU Loss", iteration=epoch+1, value=train_pu_loss)
-                cml_logger.report_scalar(title="Loss evolution", series="BCE Loss", iteration=epoch+1, value=train_bce_loss)
-                cml_logger.report_scalar(title="Loss evolution", series="Total Loss", iteration=epoch+1, value=train_loss)
-
+                                                            
             print('Validation')
             net.eval()
             with th.no_grad():
@@ -354,10 +361,8 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
                 valid_loss /= valid_steps
                 #roc_auc = compute_roc(valid_labels, preds)
                 fmax = compute_fmax(valid_labels, preds)
-                if cml_logger:
-                    cml_logger.report_scalar(title="Valid FMax evolution", series="FMax", iteration=epoch+1, value=fmax)
-                    cml_logger.report_scalar(title="Loss evolution", series="Valid Loss", iteration=epoch+1, value=valid_loss)
-
+                wandb.log({"valid_loss": valid_loss, "valid_fmax": fmax})
+                                                        
                 print(f'Epoch {epoch}: Loss - {train_loss}, Valid loss - {valid_loss}, FMax - {fmax}')
 
             # if valid_loss < best_loss and epoch > 1:
@@ -422,8 +427,8 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
 
     test_df.to_pickle(out_file)
 
-    test(data_root, ont, model_name, combine, alpha_test, False, cml_logger)
-    cml_logger.flush()
+    test(data_root, ont, model_name, combine, alpha_test, False, wandb_logger)
+    wandb.finish()
 
 
     
@@ -560,7 +565,6 @@ def get_data(df, terms_dict, go_ont, data_root="data"):
     num_unlabeled = (labels == 0).sum()
 
     print(f"Num pos: {num_pos}, num negs: {num_negs}, num unlabeled: {num_unlabeled}")
-    sys.exit(0)
     
     print(f"Avg number of negatives {num_negs / len(df)}")
     
