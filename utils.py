@@ -4,6 +4,10 @@ import pandas as pd
 import numpy as np
 from xml.etree import ElementTree as ET
 import math
+import random
+import numpy as np
+import torch as th
+import os
 
 BIOLOGICAL_PROCESS = 'GO:0008150'
 MOLECULAR_FUNCTION = 'GO:0003674'
@@ -289,3 +293,13 @@ class DataGenerator(object):
             self.reset()
             return self.next()
 
+def seed_everything(seed=42):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    th.manual_seed(seed)
+    th.cuda.manual_seed(seed)
+    th.cuda.manual_seed_all(seed)
+    th.backends.cudnn.deterministic = True
+    th.backends.cudnn.benchmark = False
+    
