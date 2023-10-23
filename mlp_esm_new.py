@@ -57,15 +57,16 @@ def seed_everything(seed=42):
 @ck.option(
     '--device', '-d', default='cuda',
     help='Device')
-def main(data_root, ont, model_name, batch_size, epochs, load, alpha_test, combine, device):
+@ck.option("--run", "-r", default=0)
+def main(data_root, ont, model_name, batch_size, epochs, load, alpha_test, combine, device, run):
     # seed_everything(0)
     go_file = f'{data_root}/go-basic.obo'
-    model_file = f'{data_root}/{ont}/{model_name}.th'
+    model_file = f'{data_root}/{ont}/{model_name}_{run}.th'
     out_file = f'{data_root}/{ont}/predictions_{model_name}.pkl'
 
 
-    wandb_logger = wandb.init(project="dgpu_baseline_mlp_no_seed", name= model_name, group= f"{ont}")
-    wandb.config.update({"batch_size": batch_size, "epochs": epochs, "alpha_test": alpha_test, "combine": combine})
+    wandb_logger = wandb.init(project="final-dgpu-similarity-based", name= model_name, group= f"mlp-{ont}")
+    wandb.config.update({"data_root": data_root})
     
         
     
@@ -142,9 +143,8 @@ def main(data_root, ont, model_name, batch_size, epochs, load, alpha_test, combi
                 #roc_auc = compute_roc(valid_labels, preds)
                 fmax = compute_fmax(valid_labels, preds)
                 wandb.log({"valid_loss": valid_loss, "valid_fmax": fmax})
+                
                                 
-                print(f'Epoch {epoch}: Loss - {train_loss}, Valid loss - {valid_loss}, FMax - {fmax}')
-                # print(f'Epoch {epoch}: Loss - {train_loss}, Valid loss - {valid_loss}, AUC - {roc_auc}')
             # if valid_loss < best_loss:
             if fmax > best_fmax:
                 best_fmax = fmax
