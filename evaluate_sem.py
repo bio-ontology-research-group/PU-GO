@@ -21,7 +21,7 @@ import pickle as pkl
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 
 
-def test(data_root, ont, model, combine, alpha, tex_output, aggregator, cml_logger):
+def test(data_root, ont, model, combine, alpha, tex_output, aggregator, wandb_logger):
 
     prop_annots_file = f"{data_root}/{ont}/propagated_annotations.pkl"
     test_data_file = f'{data_root}/{ont}/predictions_{model}.pkl'
@@ -161,7 +161,7 @@ def test(data_root, ont, model, combine, alpha, tex_output, aggregator, cml_logg
     print(f'AUPR: {aupr:0.3f}')
     print(f'AVGIC: {avgic:0.3f}')
 
-    cml_logger.log({
+    wandb_logger.log({
         f"fmax_{aggregator}": fmax,
         f"smin_{aggregator}": smin,
         f"aupr_{aggregator}": aupr,
@@ -175,26 +175,6 @@ def test(data_root, ont, model, combine, alpha, tex_output, aggregator, cml_logg
     })
 
 
-
-    
-    # wandb.finish()
-
-    
-    # cml_logger.report_single_value("fmax", fmax)
-    # cml_logger.report_single_value("smin", smin)
-    # cml_logger.report_single_value("aupr", aupr)
-    # cml_logger.report_single_value("avg_auc", avg_auc)
-    # cml_logger.report_single_value("wfmax", wfmax)
-    # cml_logger.report_single_value("avgic", avgic)
-    # cml_logger.report_single_value("threshold", tmax)
-    # cml_logger.report_single_value("w_threshold", wtmax)
-    # cml_logger.report_single_value("spec", fmax_spec_match)
-    # cml_logger.report_single_value("combine", combine)
-
-    # cml_logger.flush()
-    
-
-    
     if tex_output:
         tex = "& "
         tex += f"{fmax:0.3f} & {smin:0.3f} & {aupr:0.3f} & {avg_auc:0.3f} \\\\"
