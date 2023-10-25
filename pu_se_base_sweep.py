@@ -354,7 +354,7 @@ class DeepGOPU(EmbeddingELModel):
                         valid_loss /= valid_steps
                         valid_fmax = compute_fmax(self.valid_labels, preds)
                         wandb.log({"valid_loss": valid_loss, "valid fmax": valid_fmax})
-                        print(f'Epoch {epoch}: PF Loss - {train_pu_loss:.6f}, EL Loss - {train_el_loss:.6f}, BCE Loss - {train_bce_loss:.6f}, Valid loss - {valid_loss:.6f}, Valid Fmax - {valid_fmax:.6f}')
+                        print(f'Epoch {epoch}:  EL Loss - {train_el_loss:.6f}, BCE Loss - {train_bce_loss:.6f}, Valid loss - {valid_loss:.6f}, Valid Fmax - {valid_fmax:.6f}')
 
                     if valid_fmax > best_fmax:
                         best_fmax = valid_fmax
