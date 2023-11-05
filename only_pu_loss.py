@@ -1,6 +1,6 @@
 import click as ck
 import pandas as pd
-from utils import Ontology
+from utils import Ontology, seed_everything
 import numpy as np
 from sklearn.metrics import roc_curve, auc, precision_recall_curve
 import copy
@@ -21,7 +21,7 @@ from tqdm import tqdm
 import math
 
 from evaluate_new import test
-from mowl.utils.random import seed_everything
+
 
 import wandb
 
@@ -70,11 +70,12 @@ class DGPROModel(nn.Module):
         return self.net(features)
     
 class DeepGOPU(nn.Module):
-    def __init__(self, nb_gos, prior, gamma, loss_type, terms_count, device = "cuda"):
+    def __init__(self, nb_gos, prior, gamma, margin_factor, loss_type, terms_count, device = "cuda"):
         super().__init__()
         self.nb_gos = nb_gos
         self.prior = prior
         self.gamma = gamma
+        self.margin = self.prior*margin_factor
         self.dgpro = DGPROModel(nb_gos)
         self.loss_type = loss_type
         self.device = device
@@ -82,7 +83,8 @@ class DeepGOPU(nn.Module):
         max_count = max(terms_count.values())
         print(f"max_count: {max_count}")
         # self.priors = [self.prior*x for x in terms_count.values()]
-        self.priors = [min(x/max_count, self.prior) for x in terms_count.values()]
+        self.priors = [self.prior*x/max_count for x in terms_count.values()]
+        # self.priors = [min(x/max_count, self.prior) for x in terms_count.values()]
         self.priors = th.tensor(self.priors, dtype=th.float32, requires_grad=False).to(device)
                         
         
@@ -96,12 +98,21 @@ class DeepGOPU(nn.Module):
         p_below = - (F.logsigmoid(-preds)*pos_label).sum() / pos_label.sum()
         u_below = - (F.logsigmoid(-preds)*unl_label).sum() / unl_label.sum()
 
-        
-        # print(f"p_above: {p_above}, p_below: {p_below}, u_below: {u_below}")
-        
-        loss = self.prior * p_above + th.relu(u_below - self.prior*p_below  + self.prior/2)
+        loss = self.prior * p_above + th.relu(u_below - self.prior*p_below + self.margin)
         return loss
 
+    def pu_ranking_loss(self, data, labels):
+        preds = self.dgpro(data)
+
+        pos_label = (labels == 1).float()
+        unl_label = (labels != 1).float()
+
+        p_above = - (F.logsigmoid(preds)*pos_label).sum() / pos_label.sum()
+        p_below = - (F.logsigmoid(-preds)*pos_label).sum() / pos_label.sum()
+        u_below = - (F.logsigmoid(preds * pos_label - preds*unl_label)).sum() / unl_label.sum()
+
+        loss = self.prior * p_above + th.relu(u_below - self.prior*p_below + self.margin)
+        return loss
 
     def pu_loss_multi(self, data, labels):
         preds = self.dgpro(data)
@@ -114,7 +125,7 @@ class DeepGOPU(nn.Module):
         p_below = - (F.logsigmoid(-preds)*pos_label).sum(dim=0) / pos_label.sum()
         u_below = - (F.logsigmoid(-preds)*unl_label).sum(dim=0) / unl_label.sum()
 
-        loss = self.priors * p_above + th.relu(u_below - self.priors*p_below + self.priors/2)
+        loss = self.priors * p_above + th.relu(u_below - self.priors*p_below + self.margin)
         loss = loss.sum()
         return loss
 
@@ -138,7 +149,7 @@ class DeepGOPU(nn.Module):
 
         
         loss = self.prior * p_above + th.relu(gamma * (1 - self.prior) * n_below +
-                                              (1 - gamma) * (u_below - self.prior * p_below + self.prior / 2))
+                                              (1 - gamma) * (u_below - self.prior * p_below + self.margin))
         
         return loss
 
@@ -186,6 +197,8 @@ class DeepGOPU(nn.Module):
             return self.pun_loss(data, labels)
         elif self.loss_type == "pun_multi":
             return self.pun_loss_multi(data, labels)
+        elif self.loss_type == "pu_ranking":
+            return self.pu_ranking_loss(data, labels)
         else:
             raise NotImplementedError
 
@@ -198,16 +211,16 @@ class DeepGOPU(nn.Module):
 
 @ck.command()
 @ck.option(
-    '--data-root', '-dr', default='data',
+    '--data_root', '-dr', default='data',
     help='Prediction model')
 @ck.option(
     '--ont', '-ont', default='mf',
     help='Prediction model')
 @ck.option(
-    '--model-name', '-mn', default='dgpu',
+    '--model_name', '-mn', default='dgpu',
     help='Prediction model')
 @ck.option(
-    '--batch-size', '-bs', default=256,
+    '--batch_size', '-bs', default=256,
     help='Batch size for training')
 @ck.option(
     '--epochs', '-ep', default=256,
@@ -217,49 +230,30 @@ class DeepGOPU(nn.Module):
     help='Prior')
 @ck.option("--gamma", '-g', default = 0.5)
 @ck.option("--alpha", '-a', default = 0.5, help="Weight of the unlabeled loss")
-@ck.option('--loss_type', '-loss', default='pu', type=ck.Choice(['pu', 'pun', 'pu_multi', 'pun_multi']))
+@ck.option('--loss_type', '-loss', default='pu', type=ck.Choice(['pu', 'pun', 'pu_multi', 'pun_multi', 'pu_ranking']))
 @ck.option('--max_lr', '-lr', default=1e-4)
+@ck.option('--min_lr_factor', '-minlr', default=0.01)
+@ck.option('--margin_factor', '-mf', default=0.0)
 @ck.option('--load', '-ld', is_flag=True, help='Load Model?')
-@ck.option("--alpha-test", "-at", default=0.5)
+@ck.option("--alpha_test", "-at", default=0.5)
 @ck.option("--combine", "-c", is_flag=True)
 @ck.option('--device', '-d', default='cuda', help='Device')
-def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, loss_type, max_lr, load, alpha_test, combine, device):
+@ck.option('--run', '-r', default='0', help='Run')
+def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, loss_type, max_lr, min_lr_factor,  margin_factor, load, alpha_test, combine, device, run):
 
-    log_file = f"result_{ont}.log"
-    params = f"ont: {ont},"
-    params += f" batch_size: {batch_size},"
-    params += f" prior: {prior},"
-    params += f" gamma: {gamma},"
-    params += f" alpha: {alpha},"
+                                        
+    # seed_everything(42)
 
-    
-    with open(log_file, "a") as f:
-        f.write(params + "\n")
-
-    # cc best params: alpha 0.1, prob 0, p_rate 0.01
-    
-    seed_everything(0)
+    name = f"{ont}_{loss_type}"
+    wandb_logger = wandb.init(project="final-dgpu-similarity-based", name= f"{name}_{run}", group=name)
+                                    
     go_file = f'{data_root}/go-basic.obo'
-    model_name = f"{model_name}_alpha{alpha}_gamma{gamma}"
+    model_name = f"{model_name}_bs{batch_size}_mf{margin_factor}_lr{max_lr}_minlr{min_lr_factor}_p{prior}_r{run}"
     model_file = f'{data_root}/{ont}/{model_name}.th'
-    out_file = f'{data_root}/{ont}/predictions_{model_name}.pkl'
+    out_file = f'{data_root}/{ont}/predictions_{model_name}_{run}.pkl'
 
 
-    wandb_logger = wandb.init(project="dgpu-just-pu", name= model_name, group=f"{ont}_{loss_type}")
-    wandb.config.update({
-        "root": data_root,
-        "ont": ont,
-        "model_name": model_name,
-        "batch_size": batch_size,
-        "epochs": epochs,
-        "prior": prior,
-        "gamma": gamma,
-        "alpha": alpha,
-        "loss_type": loss_type,
-        "max_lr": max_lr,
-        "combine": combine,
-    })
-        
+    
 
 
     
@@ -275,7 +269,7 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
     test_features, test_labels, _ = test_data
 
 
-    net = DeepGOPU(n_terms, prior, gamma, loss_type, terms_count).to(device)
+    net = DeepGOPU(n_terms, prior, gamma, margin_factor, loss_type, terms_count).to(device)
     
 
     train_loader = FastTensorDataLoader(
@@ -290,14 +284,14 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
 
     print('Labels', np.sum(valid_labels == 1))
 
-
- 
+    train_steps = int(math.ceil(len(train_labels) / batch_size))
+    step_size_up = 2 * train_steps
     
     bce = nn.BCEWithLogitsLoss()
     optimizer = th.optim.Adam(net.parameters(), lr=max_lr)
-    scheduler = MultiStepLR(optimizer, milestones=[1, 3,], gamma=0.1)
-    min_lr = max_lr /100
-    scheduler = CyclicLR(optimizer, base_lr=min_lr, max_lr=max_lr, step_size_up=20, cycle_momentum=False)
+    #scheduler = MultiStepLR(optimizer, milestones=[1, 3,], gamma=0.1)
+    min_lr = max_lr * min_lr_factor
+    scheduler = CyclicLR(optimizer, base_lr=min_lr, max_lr=max_lr, step_size_up=step_size_up, cycle_momentum=False)
     best_loss = 10000.0
     best_fmax = 0
     tolerance = 5
@@ -310,14 +304,14 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
             train_loss = 0
             train_pu_loss = 0
             train_bce_loss = 0
-            train_steps = int(math.ceil(len(train_labels) / batch_size))
+            
             with ck.progressbar(length=train_steps, show_pos=True) as bar:
                 for batch_features, batch_labels in train_loader:
                     bar.update(1)
                     batch_features = batch_features.to(device)
                     batch_labels = batch_labels.to(device)
                     pu_loss = net(batch_features, batch_labels)
-                    logits = net.logits(batch_features)
+                    # logits = net.logits(batch_features)
 
                     batch_labels = (batch_labels == 1).float()
                     #bce_loss = bce(logits, batch_labels)
@@ -328,7 +322,7 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
                     optimizer.step()
                     train_loss += loss.detach().item()
                     train_pu_loss += pu_loss.detach().item()
-                    
+                    scheduler.step()
             
             train_loss /= train_steps
             train_pu_loss /= train_steps
@@ -341,30 +335,31 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
             net.eval()
             with th.no_grad():
                 valid_steps = int(math.ceil(len(valid_labels) / batch_size))
-                valid_loss = 0
+                valid_bce_loss = 0
+                valid_pu_loss = 0
                 preds = []
                 with ck.progressbar(length=valid_steps, show_pos=True) as bar:
                     for batch_features, batch_labels in valid_loader:
                         bar.update(1)
                         batch_features = batch_features.to(device)
                         batch_labels = batch_labels.to(device)
-                        batch_loss = net(batch_features, batch_labels)
+                        pu_loss = net(batch_features, batch_labels)
                         logits = net.logits(batch_features)
 
                         batch_labels = (batch_labels == 1).float()
                         bce_loss = bce(logits, batch_labels)
-                        batch_loss += bce_loss
                         
-                        valid_loss += batch_loss.detach().item()
+                        valid_bce_loss += bce_loss.detach().item()
+                        valid_pu_loss += pu_loss.detach().item()
+                        
                         logits = net.predict(batch_features)
                         preds = np.append(preds, logits.detach().cpu().numpy())
-                valid_loss /= valid_steps
+                valid_pu_loss /= valid_steps
+                valid_bce_loss /= valid_steps
                 #roc_auc = compute_roc(valid_labels, preds)
                 fmax = compute_fmax(valid_labels, preds)
-                wandb.log({"valid_loss": valid_loss, "valid_fmax": fmax})
+                wandb.log({"valid_pu_loss": valid_pu_loss, "valid_bce_loss": valid_bce_loss,  "valid_fmax": fmax})
                                                         
-                print(f'Epoch {epoch}: Loss - {train_loss}, Valid loss - {valid_loss}, FMax - {fmax}')
-
             # if valid_loss < best_loss and epoch > 1:
             if fmax > best_fmax:
                 best_fmax = fmax
@@ -379,7 +374,7 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
                 print('Early stopping')
                 break
 
-            scheduler.step()
+            
             
     # Loading best model
     print('Loading the best model')
@@ -427,7 +422,7 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
 
     test_df.to_pickle(out_file)
 
-    test(data_root, ont, model_name, combine, alpha_test, False, wandb_logger)
+    test(data_root, ont, model_name, run, combine, alpha_test, False, wandb_logger)
     wandb.finish()
 
 
@@ -573,3 +568,6 @@ def get_data(df, terms_dict, go_ont, data_root="data"):
 
 if __name__ == '__main__':
     main()
+
+    
+    

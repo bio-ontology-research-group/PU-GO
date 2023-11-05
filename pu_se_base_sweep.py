@@ -163,7 +163,7 @@ class PFModule(nn.Module):
 
     
 class DeepGOPU(EmbeddingELModel):
-    def __init__(self, data_root, model_name, load, ont, pf_data, go_ont, el_module, num_models, max_lr, min_lr_factor, prior, gamma, margin, predictions_file, *args, **kwargs):
+    def __init__(self, data_root, model_name, load, ont, pf_data, go_ont, el_module, num_models, max_lr, min_lr_factor, margin, predictions_file, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         
@@ -177,7 +177,6 @@ class DeepGOPU(EmbeddingELModel):
         self.num_models = num_models
         self.max_lr = max_lr
         self.min_lr_factor = min_lr_factor
-        self.prior = prior
         self.gamma = gamma
         self.margin = margin
         self.predictions_file = predictions_file
@@ -213,42 +212,6 @@ class DeepGOPU(EmbeddingELModel):
         self.modules = nn.ModuleList(modules)
         logger.info(f"Number of models created: {len(modules)}")
     
-
-    # def pun_loss_multi(self, pred, labels, p=1):
-        
-        # pos_label = (labels == 1).float()
-        # unl_label = (labels == 0).float()
-        # neg_label = (labels == -1).float()
-
-                        
-        # p_above = - (F.logsigmoid(pred) * pos_label).sum(dim=0) / pos_label.sum()
-        # p_below = - (F.logsigmoid(-pred) * pos_label).sum(dim=0) / pos_label.sum()
-        # u_below = - (F.logsigmoid(-pred) * unl_label).sum(dim=0) / unl_label.sum()
-
-        # if neg_label.sum() > 0:
-            # n_below = - (F.logsigmoid(-pred) * neg_label).sum(dim=0) / neg_label.sum()
-            # gamma = self.gamma #0.01 #self.gamma 
-        # else:
-            # n_below = 0
-            # gamma = 0
-
-        # margin = 0 #- self.priors / 16
-        # loss = self.priors * p_above + th.relu(gamma * (1 - self.priors) * n_below +
-                                              # (1 - gamma) * (u_below - self.priors * p_below + margin))
-        # loss = self.weights * loss
-        # loss = loss.sum()
-        # assert loss >= 0, f"loss: {loss}"
-        # return loss
-
-
-    # def forward(self, data, labels, p=1):
-        # raise NotImplementedError
-
-    # def logits(self, data):
-        # return self.dgpro(data)
-    
-    # def predict(self, data):
-        # return th.sigmoid(self.dgpro(data))
  
     def load_el_data(self):
         logger.info("Loading EL data...")
@@ -451,7 +414,6 @@ class DeepGOPU(EmbeddingELModel):
 @ck.option('--model_name', '-mn', default='dg-sem-base', help='Prediction model')
 @ck.option('--batch_size', '-bs', default=256, help='Batch size for training')
 @ck.option('--epochs', '-ep', default=256, help='Training epochs')
-@ck.option('--prior', '-p', default=1e-4, help='Prior')
 @ck.option("--gamma", '-g', default = 0.01)
 @ck.option("--margin", '-m', default = 0.1)
 @ck.option('--max_lr', '-lr', default=1e-4)
@@ -460,7 +422,7 @@ class DeepGOPU(EmbeddingELModel):
 @ck.option("--combine", '-c', is_flag=True)
 @ck.option('--load', '-ld', is_flag=True, help='Load Model?')
 @ck.option('--device', '-d', default='cuda', help='Device')
-def main(data_root, ont, el_model, num_models, model_name, batch_size, epochs, prior, gamma, margin, max_lr, min_lr_factor, alpha_test, combine, load, device):
+def main(data_root, ont, el_model, num_models, model_name, batch_size, epochs, gamma, margin, max_lr, min_lr_factor, alpha_test, combine, load, device):
 
     
     train_file = f'{data_root}/{ont}/train_normalized.owl'
@@ -480,13 +442,11 @@ def main(data_root, ont, el_model, num_models, model_name, batch_size, epochs, p
     el_model = wandb.config.el_model
     num_models = wandb.config.num_models
     batch_size = wandb.config.batch_size
-    prior = wandb.config.prior
-    gamma = wandb.config.gamma
     margin = wandb.config.margin
     max_lr = wandb.config.max_lr
     min_lr_factor = wandb.config.min_lr_factor
     
-    model_name = f"{model_name}_{el_model}_{num_models}_bs{batch_size}_p{prior}_g{gamma}_lr{max_lr}_mlr{min_lr_factor}_m{margin}"
+    model_name = f"{model_name}_{el_model}_{num_models}_bs{batch_size}_lr{max_lr}_mlr{min_lr_factor}_m{margin}"
     model_file = f'{data_root}/{ont}/{model_name}.th'
     predictions_file = f'{data_root}/{ont}/predictions_{model_name}.pkl'
     logger.info(f"Creating mOWL dataset")
@@ -499,7 +459,7 @@ def main(data_root, ont, el_model, num_models, model_name, batch_size, epochs, p
 
     
 
-    model = DeepGOPU(data_root, model_name, load, ont, pf_data, go, el_model, num_models, max_lr, min_lr_factor, prior, gamma, margin, predictions_file,  dataset, el_dim, batch_size, device = device, model_filepath = model_file)
+    model = DeepGOPU(data_root, model_name, load, ont, pf_data, go, el_model, num_models, max_lr, min_lr_factor, margin, predictions_file,  dataset, el_dim, batch_size, device = device, model_filepath = model_file)
 
     wandb.watch(model.modules)
     
