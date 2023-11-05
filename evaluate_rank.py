@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 import numpy as np
 import pandas as pd
 import click as ck
@@ -24,11 +22,9 @@ def test(data_root, ont, model, run, combine, alpha, tex_output, wandb_logger):
     
     train_data_file = f'{data_root}/{ont}/train_data.pkl'
     valid_data_file = f'{data_root}/{ont}/valid_data.pkl'
-    test_data_file = f'{data_root}/{ont}/predictions_{model}_{run}.pkl'
-    if combine:
-        diam_data_file = f'{data_root}/{ont}/test_data_diam.pkl'
-        diam_df = pd.read_pickle(diam_data_file)
-
+    test_data_file = f'{data_root}/{ont}/test_data.pkl'
+    preds_data_file = f'{data_root}/{ont}/predictions_{model}_{run}.pkl'
+                    
     terms_file = f'{data_root}/{ont}/terms.pkl'
     go_rels = Ontology(f'{data_root}/go-basic.obo', with_rels=True)
     terms_df = pd.read_pickle(terms_file)
@@ -39,39 +35,19 @@ def test(data_root, ont, model, run, combine, alpha, tex_output, wandb_logger):
     valid_df = pd.read_pickle(valid_data_file)
     train_df = pd.concat([train_df, valid_df])
     test_df = pd.read_pickle(test_data_file)
-    
-    
-    annotations = train_df['prop_annotations'].values
-    annotations = list(map(lambda x: set(x), annotations))
-    test_annotations = test_df['prop_annotations'].values
-    test_annotations = list(map(lambda x: set(x), test_annotations))
-    go_rels.calculate_ic(annotations + test_annotations)
+    preds_df = pd.read_pickle(preds_data_file)
 
-    # Print IC values of terms
-    ics = {}
-    for i, term in enumerate(terms):
-        ics[term] = go_rels.get_ic(term)
-    
-    # Combine scores for diamond and deepgo
     eval_preds = []
     
     for i, row in enumerate(test_df.itertuples()):
-        if combine:
-            diam_preds = np.zeros((len(terms),), dtype=np.float32)
-            for go_id, score in diam_df.iloc[i]['diam_preds'].items():
-                if go_id in terms_dict:
-                    diam_preds[terms_dict[go_id]] = score
-        
-                preds = diam_preds * alpha + row.preds * (1 - alpha)
-        else:
-            preds = row.preds
+        preds = row.preds
         eval_preds.append(preds)
 
     labels = np.zeros((len(test_df), len(terms)), dtype=np.float32)
     eval_preds = np.concatenate(eval_preds).reshape(-1, len(terms))
 
     for i, row in enumerate(test_df.itertuples()):
-        for go_id in row.prop_annotations:
+        for go_id in row.annotations:
             if go_id in terms_dict:
                 labels[i, terms_dict[go_id]] = 1
 

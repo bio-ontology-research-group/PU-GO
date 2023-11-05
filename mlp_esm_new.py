@@ -62,10 +62,10 @@ def main(data_root, ont, model_name, batch_size, epochs, load, alpha_test, combi
     # seed_everything(0)
     go_file = f'{data_root}/go-basic.obo'
     model_file = f'{data_root}/{ont}/{model_name}_{run}.th'
-    out_file = f'{data_root}/{ont}/predictions_{model_name}.pkl'
+    out_file = f'{data_root}/{ont}/predictions_{model_name}_{run}.pkl'
 
 
-    wandb_logger = wandb.init(project="final-dgpu-similarity-based", name= model_name, group= f"mlp-{ont}")
+    wandb_logger = wandb.init(project="final-dgpu-time-based", name= model_name, group= f"mlp-{ont}")
     wandb.config.update({"data_root": data_root})
     
         
@@ -191,7 +191,10 @@ def main(data_root, ont, model_name, batch_size, epochs, load, alpha_test, combi
 
     test_df.to_pickle(out_file)
 
-    test(data_root, ont, model_name, combine, alpha_test, False, wandb_logger)
+    test(data_root, ont, model_name, run, combine, alpha_test, False, wandb_logger)
+    combine = True
+    test(data_root, ont, model_name, run, combine, alpha_test, False, wandb_logger)
+    
     wandb.finish()
     
     
@@ -280,7 +283,7 @@ def load_data(data_root, ont):
     
     train_df = pd.read_pickle(f'{data_root}/{ont}/train_data.pkl')
     valid_df = pd.read_pickle(f'{data_root}/{ont}/valid_data.pkl')
-    test_df = pd.read_pickle(f'{data_root}/{ont}/test_data.pkl')
+    test_df = pd.read_pickle(f'{data_root}/{ont}/test_data_lk.pkl')
 
     train_data = get_data(train_df, terms_dict)
     valid_data = get_data(valid_df, terms_dict)
