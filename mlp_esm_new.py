@@ -21,7 +21,8 @@ import os
 import random
 from clearml import Task
 import wandb
-from evaluate_new import test
+# from evaluate_new import test
+from evaluate_rank import test
 def seed_everything(seed=42):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
