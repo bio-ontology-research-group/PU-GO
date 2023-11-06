@@ -96,7 +96,7 @@ def main(data_root, ont, model_name, batch_size, epochs, load, alpha_test, combi
 
     print('Labels', np.sum(valid_labels))
     
-    optimizer = th.optim.Adam(net.parameters(), lr=1e-3)
+    optimizer = th.optim.Adam(net.parameters(), lr=1e-5)
     scheduler = MultiStepLR(optimizer, milestones=[3,], gamma=0.1)
 
     best_loss = 10000.0
