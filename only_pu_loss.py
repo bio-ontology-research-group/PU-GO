@@ -20,7 +20,7 @@ import sys
 from tqdm import tqdm
 import math
 
-from evaluate_new import test
+from evaluate_rank import test
 
 
 import wandb
@@ -470,7 +470,7 @@ def load_data(data_root, ont, go):
     
     train_df = pd.read_pickle(f'{data_root}/{ont}/train_data.pkl')
     valid_df = pd.read_pickle(f'{data_root}/{ont}/valid_data.pkl')
-    test_df = pd.read_pickle(f'{data_root}/{ont}/test_data.pkl')
+    test_df = pd.read_pickle(f'{data_root}/{ont}/test_data_lk.pkl')
                         
     train_data = get_data(train_df, terms_dict, go, data_root)
     valid_data = get_data(valid_df, terms_dict, go, data_root)
