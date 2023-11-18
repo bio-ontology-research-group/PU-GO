@@ -26,7 +26,7 @@ def main(data_frame):
     
 def load_regulations():
     regs = {}
-    with open('data/regulations.txt') as f:
+    with open('data-sim/regulations.txt') as f:
         for line in f:
             it = line.strip().split('\t')
             reg, cl, pn = it[1].replace('_', ':'), it[0].replace('_', ':'), it[2]
