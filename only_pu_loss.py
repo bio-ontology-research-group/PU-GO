@@ -129,6 +129,21 @@ class DeepGOPU(nn.Module):
         loss = loss.sum()
         return loss
 
+    def pu_ranking_loss_multi(self, data, labels):
+        preds = self.dgpro(data)
+
+        pos_label = (labels == 1).float()
+        unl_label = (labels != 1).float()
+
+        p_above = - (F.logsigmoid(preds)*pos_label).sum(dim=0) / pos_label.sum()
+        p_below = - (F.logsigmoid(-preds)*pos_label).sum(dim=0) / pos_label.sum()
+        u_below = - (F.logsigmoid(preds * pos_label - preds*unl_label)).sum(dim=0) / unl_label.sum()
+
+        loss = self.priors * p_above + th.relu(u_below - self.priors*p_below + self.margin)
+        loss = loss.sum()
+        return loss
+
+    
     def pun_loss(self, data, labels):
         pred = self.dgpro(data)
 
@@ -230,7 +245,7 @@ class DeepGOPU(nn.Module):
     help='Prior')
 @ck.option("--gamma", '-g', default = 0.5)
 @ck.option("--alpha", '-a', default = 0.5, help="Weight of the unlabeled loss")
-@ck.option('--loss_type', '-loss', default='pu', type=ck.Choice(['pu', 'pun', 'pu_multi', 'pun_multi', 'pu_ranking']))
+@ck.option('--loss_type', '-loss', default='pu', type=ck.Choice(['pu', 'pun', 'pu_multi', 'pun_multi', 'pu_ranking', 'pu_ranking_multi']))
 @ck.option('--max_lr', '-lr', default=1e-4)
 @ck.option('--min_lr_factor', '-minlr', default=0.01)
 @ck.option('--margin_factor', '-mf', default=0.0)
@@ -470,7 +485,7 @@ def load_data(data_root, ont, go):
     
     train_df = pd.read_pickle(f'{data_root}/{ont}/train_data.pkl')
     valid_df = pd.read_pickle(f'{data_root}/{ont}/valid_data.pkl')
-    test_df = pd.read_pickle(f'{data_root}/{ont}/test_data_lk.pkl')
+    test_df = pd.read_pickle(f'{data_root}/{ont}/test_data.pkl')
                         
     train_data = get_data(train_df, terms_dict, go, data_root)
     valid_data = get_data(valid_df, terms_dict, go, data_root)
