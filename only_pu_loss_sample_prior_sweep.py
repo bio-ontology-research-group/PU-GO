@@ -19,7 +19,8 @@ from functools import partial
 import sys
 from tqdm import tqdm
 import math
-
+import os
+import pickle as pkl
 from evaluate_new import test
 # from evaluate_rank import test
 
@@ -111,8 +112,52 @@ class DeepGOPU(nn.Module):
         p_above = - (F.logsigmoid(preds)*pos_label).sum() / pos_label.sum()
         p_below = - (F.logsigmoid(-preds)*pos_label).sum() / pos_label.sum()
         u_below = - (F.logsigmoid(preds * pos_label - preds*unl_label)).sum() / unl_label.sum()
-
         loss = self.prior * p_above + th.relu(u_below - self.prior*p_below + self.margin)
+        return loss
+
+    def pu_sample_prior_ranking_multi_loss(self, data, labels, sample_priors):
+
+        preds = self.dgpro(data)
+
+        priors = self.priors * sample_priors
+        
+        pos_label = (labels == 1).float()
+        unl_label = (labels != 1).float()
+
+        p_above = - (F.logsigmoid(preds)) * pos_label
+        p_below = - (F.logsigmoid(-preds)) * pos_label
+        u_below = - (F.logsigmoid(preds * pos_label - preds*unl_label)) 
+
+        p_risk_above = (p_above * priors).sum() / pos_label.sum()
+        p_risk_below = (p_below * priors).sum() / pos_label.sum()
+        u_risk_below = (u_below * priors).sum() / unl_label.sum()
+
+        loss = p_risk_above + th.relu(u_risk_below - p_risk_below + self.margin)
+
+        return loss
+
+
+
+    
+    def pun_ranking_loss(self, data, labels):
+        preds = self.dgpro(data)
+
+        pos_label = (labels == 1).float()
+        unl_label = (labels == 0).float()
+        neg_label = (labels == -1).float()
+        
+        p_above = - (F.logsigmoid(preds)*pos_label).sum() / pos_label.sum()
+        p_below = - (F.logsigmoid(-preds)*pos_label).sum() / pos_label.sum()
+        u_below = - (F.logsigmoid(preds * pos_label - preds*unl_label)).sum() / unl_label.sum()
+
+        if neg_label.sum() > 0:
+            n_below = - (F.logsigmoid(preds * pos_label - preds*neg_label)).sum() / neg_label.sum()
+            gamma = self.gamma
+        else:
+            n_below = 0
+            gamma = 0
+
+        loss = self.prior * p_above + th.relu(gamma * (1 - self.prior) * n_below + (1 - gamma) * (u_below - self.prior * p_below + self.margin))
         return loss
 
     def pu_loss_multi(self, data, labels):
@@ -130,6 +175,7 @@ class DeepGOPU(nn.Module):
         loss = loss.sum()
         return loss
 
+
     def pu_ranking_loss_multi(self, data, labels):
         preds = self.dgpro(data)
 
@@ -144,6 +190,27 @@ class DeepGOPU(nn.Module):
         loss = loss.sum()
         return loss
 
+    def pun_ranking_loss_multi(self, data, labels):
+        preds = self.dgpro(data)
+
+        pos_label = (labels == 1).float()
+        unl_label = (labels == 0).float()
+        neg_label = (labels == -1).float()
+
+        p_above = - (F.logsigmoid(preds)*pos_label).sum(dim=0) / pos_label.sum()
+        p_below = - (F.logsigmoid(-preds)*pos_label).sum(dim=0) / pos_label.sum()
+        u_below = - (F.logsigmoid(preds * pos_label - preds*unl_label)).sum(dim=0) / unl_label.sum()
+
+        if neg_label.sum() > 0:
+            n_below = - (F.logsigmoid(preds * pos_label - preds*neg_label)).sum(dim=0) / neg_label.sum()
+            gamma = self.gamma
+        else:
+            n_below = 0
+            gamma = 0
+
+        loss = self.priors * p_above + th.relu(gamma * (1 - self.priors) * n_below + (1 - gamma) * (u_below - self.priors * p_below + self.margin))
+        loss = loss.sum()
+        return loss
     
     def pun_loss(self, data, labels):
         pred = self.dgpro(data)
@@ -203,7 +270,7 @@ class DeepGOPU(nn.Module):
 
                                                                  
     
-    def forward(self, data, labels):
+    def forward(self, data, labels, w_labels=None):
         # return self.pu_ranking_loss(data, labels)
         if self.loss_type == 'pu':
             return self.pu_loss(data, labels)
@@ -215,8 +282,14 @@ class DeepGOPU(nn.Module):
             return self.pun_loss_multi(data, labels)
         elif self.loss_type == "pu_ranking":
             return self.pu_ranking_loss(data, labels)
+        elif self.loss_type == "pun_ranking":
+            return self.pun_ranking_loss(data, labels)
         elif self.loss_type == "pu_ranking_multi":
             return self.pu_ranking_loss_multi(data, labels)
+        elif self.loss_type == "pun_ranking_multi":
+            return self.pun_ranking_loss_multi(data, labels)
+        elif self.loss_type == "pu_sample_prior_ranking_multi":
+            return self.pu_sample_prior_ranking_multi_loss(data, labels, w_labels)
         else:
             raise NotImplementedError
 
@@ -248,25 +321,35 @@ class DeepGOPU(nn.Module):
     help='Prior')
 @ck.option("--gamma", '-g', default = 0.5)
 @ck.option("--alpha", '-a', default = 0.5, help="Weight of the unlabeled loss")
-@ck.option('--loss_type', '-loss', default='pu', type=ck.Choice(['pu', 'pun', 'pu_multi', 'pun_multi', 'pu_ranking', 'pu_ranking_multi']))
+@ck.option('--loss_type', '-loss', default='pu', type=ck.Choice(['pu', 'pun', 'pu_multi', 'pun_multi', 'pu_ranking', "pun_ranking", "pu_ranking_multi", "pun_ranking_multi", "pu_sample_prior_ranking_multi"]))
 @ck.option('--max_lr', '-lr', default=1e-4)
 @ck.option('--min_lr_factor', '-minlr', default=0.01)
 @ck.option('--margin_factor', '-mf', default=0.0)
 @ck.option('--load', '-ld', is_flag=True, help='Load Model?')
 @ck.option("--alpha_test", "-at", default=0.5)
 @ck.option("--combine", "-c", is_flag=True)
+@ck.option("--run", default=0)
 @ck.option('--device', '-d', default='cuda', help='Device')
-@ck.option('--run', '-r', default='0', help='Run')
-def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, loss_type, max_lr, min_lr_factor,  margin_factor, load, alpha_test, combine, device, run):
+def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, loss_type, max_lr, min_lr_factor,  margin_factor, load, alpha_test, combine, run, device):
 
                                         
     # seed_everything(42)
 
     name = f"{ont}_{loss_type}"
-    wandb_logger = wandb.init(project="final-dgpu-similarity-based", name= f"{name}_{run}", group=name)
-                                    
+    wandb_logger = wandb.init(project="sweeps-dgpu-time-based", name= name, group=name)
+    batch_size = wandb.config.batch_size
+    margin_factor = wandb.config.margin_factor
+    max_lr = wandb.config.max_lr
+    min_lr_factor = wandb.config.min_lr_factor
+    prior = wandb.config.prior
+    data_root= wandb.config.data_root
+    ont = wandb.config.ont
+    loss_type = wandb.config.loss_type
+    gamma = wandb.config.gamma
+
+    
     go_file = f'{data_root}/go-basic.obo'
-    model_name = f"{model_name}_bs{batch_size}_mf{margin_factor}_lr{max_lr}_minlr{min_lr_factor}_p{prior}_r{run}"
+    model_name = f"{model_name}_bs{batch_size}_mf{margin_factor}_lr{max_lr}_minlr{min_lr_factor}_p{prior}_g{gamma}"
     model_file = f'{data_root}/{ont}/{model_name}.th'
     out_file = f'{data_root}/{ont}/predictions_{model_name}_{run}.pkl'
 
@@ -282,16 +365,16 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
 
     
         
-    train_features, train_labels, terms_count = train_data
-    valid_features, valid_labels, _ = valid_data
-    test_features, test_labels, _ = test_data
+    train_features, train_labels, train_w_labels, terms_count = train_data
+    valid_features, valid_labels, _,  _ = valid_data
+    test_features, test_labels, _,  _ = test_data
 
 
     net = DeepGOPU(n_terms, prior, gamma, margin_factor, loss_type, terms_count).to(device)
     
 
     train_loader = FastTensorDataLoader(
-        train_features, train_labels, batch_size=batch_size, shuffle=True)
+        train_features, train_labels, train_w_labels, batch_size=batch_size, shuffle=True)
     valid_loader = FastTensorDataLoader(
         valid_features, valid_labels, batch_size=batch_size, shuffle=False)
     test_loader = FastTensorDataLoader(
@@ -324,11 +407,12 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
             train_bce_loss = 0
             
             with ck.progressbar(length=train_steps, show_pos=True) as bar:
-                for batch_features, batch_labels in train_loader:
+                for batch_features, batch_labels, batch_w_labels in train_loader:
                     bar.update(1)
                     batch_features = batch_features.to(device)
                     batch_labels = batch_labels.to(device)
-                    pu_loss = net(batch_features, batch_labels)
+                    batch_w_labels = batch_w_labels.to(device)
+                    pu_loss = net(batch_features, batch_labels, batch_w_labels)
                     # logits = net.logits(batch_features)
 
                     batch_labels = (batch_labels == 1).float()
@@ -354,34 +438,34 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
             with th.no_grad():
                 valid_steps = int(math.ceil(len(valid_labels) / batch_size))
                 valid_bce_loss = 0
-                valid_pu_loss = 0
+                # valid_pu_loss = 0
                 preds = []
                 with ck.progressbar(length=valid_steps, show_pos=True) as bar:
                     for batch_features, batch_labels in valid_loader:
                         bar.update(1)
                         batch_features = batch_features.to(device)
                         batch_labels = batch_labels.to(device)
-                        pu_loss = net(batch_features, batch_labels)
+                        # pu_loss = net(batch_features, batch_labels)
                         logits = net.logits(batch_features)
 
                         batch_labels = (batch_labels == 1).float()
                         bce_loss = bce(logits, batch_labels)
                         
                         valid_bce_loss += bce_loss.detach().item()
-                        valid_pu_loss += pu_loss.detach().item()
+                        # valid_pu_loss += pu_loss.detach().item()
                         
                         logits = net.predict(batch_features)
                         preds = np.append(preds, logits.detach().cpu().numpy())
-                valid_pu_loss /= valid_steps
+                # valid_pu_loss /= valid_steps
                 valid_bce_loss /= valid_steps
                 #roc_auc = compute_roc(valid_labels, preds)
                 fmax = compute_fmax(valid_labels, preds)
-                wandb.log({"valid_pu_loss": valid_pu_loss, "valid_bce_loss": valid_bce_loss,  "valid_fmax": fmax})
+                wandb.log({"valid_bce_loss": valid_bce_loss,  "valid_fmax": fmax})
                                                         
-            # if valid_loss < best_loss and epoch > 1:
+            # if valid_bce_loss < best_loss:
             if fmax > best_fmax:
                 best_fmax = fmax
-                # best_loss = valid_loss
+                # best_loss = valid_bce_loss
                 print('Saving model')
                 th.save(net.state_dict(), model_file)
                 curr_tolerance = tolerance
@@ -408,20 +492,20 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
                 bar.update(1)
                 batch_features = batch_features.to(device)
                 batch_labels = batch_labels.to(device)
-                batch_loss = net(batch_features, batch_labels)
+                # batch_loss = net(batch_features, batch_labels)
                 logits = net.logits(batch_features)
 
                 batch_labels = (batch_labels == 1).float()
                 bce_loss = bce(logits, batch_labels)
-                batch_loss += bce_loss
+                batch_loss = bce_loss
                 
-                test_loss += batch_loss.detach().cpu().item()
+                # test_loss += batch_loss.detach().cpu().item()
                 logits = net.predict(batch_features)
                 preds.append(logits.detach().cpu().numpy())
-            test_loss /= test_steps
+            # test_loss /= test_steps
             preds = np.concatenate(preds)
             roc_auc = 0 # compute_roc(test_labels, preds)
-        print(f'Test Loss - {test_loss}, AUC - {roc_auc}')
+        # print(f'Test Loss - {test_loss}, AUC - {roc_auc}')
 
     indexed_preds = [(i, preds[i]) for i in range(len(preds))]
     
@@ -490,13 +574,13 @@ def load_data(data_root, ont, go):
     valid_df = pd.read_pickle(f'{data_root}/{ont}/valid_data.pkl')
     test_df = pd.read_pickle(f'{data_root}/{ont}/test_data.pkl')
                         
-    train_data = get_data(train_df, terms_dict, go, data_root)
-    valid_data = get_data(valid_df, terms_dict, go, data_root)
-    test_data = get_data(test_df, terms_dict, go, data_root)
+    train_data = get_data(train_df, terms_dict, go, data_root, "train", ont)
+    valid_data = get_data(valid_df, terms_dict, go, data_root, "valid", ont)
+    test_data = get_data(test_df, terms_dict, go, data_root, "test", ont)
 
     return terms_dict, train_data, valid_data, test_data, test_df
 
-def get_data(df, terms_dict, go_ont, data_root="data"):
+def get_data(df, terms_dict, go_ont, data_root, subset, ont_name):
     data = th.zeros((len(df), 5120), dtype=th.float32)
     labels = th.zeros((len(df), len(terms_dict)), dtype=th.float32)
 
@@ -507,26 +591,28 @@ def get_data(df, terms_dict, go_ont, data_root="data"):
     for i, row in enumerate(df.itertuples()):
         data[i, :] = th.FloatTensor(row.esm2)
         if not hasattr(row, 'prop_annotations'):
-            continue
+           continue
         for go_id in row.prop_annotations:
             if go_id in terms_dict:
                 g_id = terms_dict[go_id]
                 labels[i, g_id] = 1
                 terms_count[go_id] += 1
 
-        # for go_id in row.neg_annotations:
-            # if go_id in terms_dict:
-                # g_id = terms_dict[go_id]
-                # labels[i, g_id] = -1
 
-                # if go_id in children:
-                    # descendants = children[go_id]
-                # else:
-                    # descendants = go_ont.get_term_set(go_id)
-                    # children[go_id] = descendants
-                    
-                # neg_idx = [terms_dict[go] for go in descendants if go in terms_dict]
-                # labels[i, neg_idx] = -1
+        if hasattr(row, 'neg_annotations'):
+            for go_id in row.neg_annotations:
+                if go_id in terms_dict:
+                    g_id = terms_dict[go_id]
+                    labels[i, g_id] = -1
+
+                    if go_id in children:
+                        descendants = children[go_id]
+                    else:
+                        descendants = go_ont.get_term_set(go_id)
+                        children[go_id] = descendants
+
+                    neg_idx = [terms_dict[go] for go in descendants if go in terms_dict]
+                    labels[i, neg_idx] = -1
                 
                 
         
@@ -577,12 +663,55 @@ def get_data(df, terms_dict, go_ont, data_root="data"):
     num_pos = (labels == 1).sum()
     num_unlabeled = (labels == 0).sum()
 
+
+    w_labels_file = f"{data_root}/{ont_name}/{subset}_weighted_labels.pkl"
+
+    if not os.path.exists(w_labels_file):
+        device = "cuda"
+
+        esm_vectors = df["esm2"].values.tolist()
+        esm_vectors = th.stack(esm_vectors)
+        norms = th.norm(esm_vectors, p=2, dim=1, keepdim=True)
+        esm_vectors = esm_vectors/norms
+        similarity_matrix = th.matmul(esm_vectors, esm_vectors.T)
+        mask = th.eye(similarity_matrix.size(0)).bool()
+        similarity_matrix[mask] = float('-inf')
+        # sim_matrix = th.softmax(similarity_matrix, dim=1)
+        sim_matrix = th.sigmoid(similarity_matrix)
+
+
+        weighted_labels = th.zeros(labels.shape)
+        labels = labels.cuda()
+        pos_labels_den = (labels == 1).float().sum(dim =0)
+        pos_labels_den = th.where(pos_labels_den == 0, th.ones_like(pos_labels_den), pos_labels_den)
+
+        for i, prot_annots in tqdm(enumerate(labels), total = len(labels)):
+            prot_similarities = sim_matrix[i].unsqueeze(1).cuda()
+            w_labels = prot_similarities * labels
+            agg_w_labels = th.sum(w_labels, dim = 0) / pos_labels_den
+            pos_mask = labels[i] == 1
+            neg_mask = labels[i] != 1
+            agg_w_labels = neg_mask * agg_w_labels + pos_mask 
+            weighted_labels[i] = agg_w_labels
+
+        with open(w_labels_file, "wb") as f:
+            pkl.dump(weighted_labels, f)
+    else:
+        with open(w_labels_file, "rb") as f:
+            weighted_labels = pkl.load(f)
+
+    
+    
     print(f"Num pos: {num_pos}, num negs: {num_negs}, num unlabeled: {num_unlabeled}")
     
     print(f"Avg number of negatives {num_negs / len(df)}")
-    
-    return data, labels, terms_count
 
+    total_terms_count = sum(terms_count.values())
+    wandb.log({"total_terms_count": total_terms_count})
+
+    wandb.log({"avg_negs": num_negs/len(df)})
+    
+    return data, labels, weighted_labels, terms_count
 
 if __name__ == '__main__':
     main()

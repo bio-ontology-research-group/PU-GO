@@ -47,9 +47,11 @@ def test(data_root, ont, model, run, combine, alpha, tex_output, wandb_logger):
     eval_preds = np.concatenate(eval_preds).reshape(-1, len(terms))
 
     for i, row in enumerate(test_df.itertuples()):
-        for go_id in row.annotations:
+        for go_id in row.prop_annotations:
+            # go_id = go_id.split('|')[0]
             # locate annotations for protein in train_df
-            train_annots = train_df[train_df['proteins'] == row.proteins].annotations.values[0]
+            train_annots = train_df[train_df['proteins'] == row.proteins].prop_annotations.values[0]
+            # train_annots = [x.split('|')[0] for x in train_annots]
             if go_id in terms_dict:
                 if go_id in train_annots:
                     filtering_labels[i, terms_dict[go_id]] = 0
@@ -80,9 +82,13 @@ def test(data_root, ont, model, run, combine, alpha, tex_output, wandb_logger):
 
     n = 0
     for i, row in tqdm(enumerate(test_df.itertuples()), total=len(test_df)):
-        for go_id in row.annotations:
-            go_id = go_id.split('|')[0]
-            if not go_id in terms_dict:
+        for go_id in row.prop_annotations:
+            # go_id = go_id.split('|')[0]
+            train_annots = train_df[train_df['proteins'] == row.proteins].prop_annotations.values[0]
+            # train_annots = [x.split('|')[0] for x in train_annots]
+
+            
+            if not go_id in terms_dict or go_id in train_annots:
                 continue
             go_index = terms_dict[go_id]
             

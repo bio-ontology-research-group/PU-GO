@@ -127,7 +127,7 @@ class DeepGOPU(nn.Module):
         u_below = - (F.logsigmoid(preds * pos_label - preds*unl_label)).sum() / unl_label.sum()
 
         if neg_label.sum() > 0:
-            n_below = - (F.logsigmoid(preds * pos_label - preds*neg_label)).sum() / pos_label.sum()
+            n_below = - (F.logsigmoid(preds * pos_label - preds*neg_label)).sum() / neg_label.sum()
             gamma = self.gamma
         else:
             n_below = 0
@@ -166,6 +166,28 @@ class DeepGOPU(nn.Module):
         loss = loss.sum()
         return loss
 
+    def pun_ranking_loss_multi(self, data, labels):
+        preds = self.dgpro(data)
+
+        pos_label = (labels == 1).float()
+        unl_label = (labels == 0).float()
+        neg_label = (labels == -1).float()
+
+        p_above = - (F.logsigmoid(preds)*pos_label).sum(dim=0) / pos_label.sum()
+        p_below = - (F.logsigmoid(-preds)*pos_label).sum(dim=0) / pos_label.sum()
+        u_below = - (F.logsigmoid(preds * pos_label - preds*unl_label)).sum(dim=0) / unl_label.sum()
+
+        if neg_label.sum() > 0:
+            n_below = - (F.logsigmoid(preds * pos_label - preds*neg_label)).sum(dim=0) / neg_label.sum()
+            gamma = self.gamma
+        else:
+            n_below = 0
+            gamma = 0
+
+        loss = self.priors * p_above + th.relu(gamma * (1 - self.priors) * n_below + (1 - gamma) * (u_below - self.priors * p_below + self.margin))
+        loss = loss.sum()
+        return loss
+    
     def pun_loss(self, data, labels):
         pred = self.dgpro(data)
 
@@ -240,6 +262,8 @@ class DeepGOPU(nn.Module):
             return self.pun_ranking_loss(data, labels)
         elif self.loss_type == "pu_ranking_multi":
             return self.pu_ranking_loss_multi(data, labels)
+        elif self.loss_type == "pun_ranking_multi":
+            return self.pun_ranking_loss_multi(data, labels)
         else:
             raise NotImplementedError
 
@@ -271,7 +295,7 @@ class DeepGOPU(nn.Module):
     help='Prior')
 @ck.option("--gamma", '-g', default = 0.5)
 @ck.option("--alpha", '-a', default = 0.5, help="Weight of the unlabeled loss")
-@ck.option('--loss_type', '-loss', default='pu', type=ck.Choice(['pu', 'pun', 'pu_multi', 'pun_multi', 'pu_ranking', "pun_ranking", "pu_ranking_multi"]))
+@ck.option('--loss_type', '-loss', default='pu', type=ck.Choice(['pu', 'pun', 'pu_multi', 'pun_multi', 'pu_ranking', "pun_ranking", "pu_ranking_multi", "pun_ranking_multi"]))
 @ck.option('--max_lr', '-lr', default=1e-4)
 @ck.option('--min_lr_factor', '-minlr', default=0.01)
 @ck.option('--margin_factor', '-mf', default=0.0)
@@ -519,7 +543,7 @@ def load_data(data_root, ont, go):
     terms_dict = {v: i for i, v in enumerate(terms)}
     print('Terms', len(terms))
     
-    train_df = pd.read_pickle(f'{data_root}/{ont}/train_data.pkl')
+    train_df = pd.read_pickle(f'{data_root}/{ont}/train_data_negs.pkl')
     valid_df = pd.read_pickle(f'{data_root}/{ont}/valid_data.pkl')
     test_df = pd.read_pickle(f'{data_root}/{ont}/test_data.pkl')
                         
@@ -547,19 +571,20 @@ def get_data(df, terms_dict, go_ont, data_root="data"):
                 labels[i, g_id] = 1
                 terms_count[go_id] += 1
 
-        # for go_id in row.neg_annotations:
-            # if go_id in terms_dict:
-                # g_id = terms_dict[go_id]
-                # labels[i, g_id] = -1
+        if hasattr(row, 'neg_annotations'):
+            for go_id in row.neg_annotations:
+                if go_id in terms_dict:
+                    g_id = terms_dict[go_id]
+                    labels[i, g_id] = -1
 
-                # if go_id in children:
-                    # descendants = children[go_id]
-                # else:
-                    # descendants = go_ont.get_term_set(go_id)
-                    # children[go_id] = descendants
-                    
-                # neg_idx = [terms_dict[go] for go in descendants if go in terms_dict]
-                # labels[i, neg_idx] = -1
+                    if go_id in children:
+                        descendants = children[go_id]
+                    else:
+                        descendants = go_ont.get_term_set(go_id)
+                        children[go_id] = descendants
+
+                    neg_idx = [terms_dict[go] for go in descendants if go in terms_dict]
+                    labels[i, neg_idx] = -1
                 
                 
         
@@ -613,6 +638,8 @@ def get_data(df, terms_dict, go_ont, data_root="data"):
     print(f"Num pos: {num_pos}, num negs: {num_negs}, num unlabeled: {num_unlabeled}")
     
     print(f"Avg number of negatives {num_negs / len(df)}")
+
+    wandb.log({"avg_negs": num_negs/len(df)})
     
     return data, labels, terms_count
 
