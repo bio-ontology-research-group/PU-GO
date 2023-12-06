@@ -6,7 +6,7 @@ import numpy as np
 from torch import nn
 from torch.nn import functional as F
 from torch import optim
-from sklearn.metrics import roc_curve, auc, matthews_corrcoef
+from sklearn.metrics import roc_curve, auc, matthews_corrcoef, precision_recall_curve
 import copy
 from torch.utils.data import DataLoader, IterableDataset, TensorDataset
 from itertools import cycle
@@ -19,7 +19,10 @@ from multiprocessing import Pool
 from functools import partial
 import os
 import random
-
+from clearml import Task
+import wandb
+# from evaluate import test
+from evaluate_rank import test
 def seed_everything(seed=42):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -31,7 +34,7 @@ def seed_everything(seed=42):
     th.backends.cudnn.benchmark = False
 
 
-
+                                                         
 @ck.command()
 @ck.option(
     '--data-root', '-dr', default='data',
@@ -43,28 +46,39 @@ def seed_everything(seed=42):
     '--model-name', '-mn', default='dgpu-mlp',
     help='Prediction model')
 @ck.option(
-    '--batch-size', '-bs', default=37,
+    '--batch-size', '-bs', default=64,
     help='Batch size for training')
 @ck.option(
     '--epochs', '-ep', default=256,
     help='Training epochs')
 @ck.option(
     '--load', '-ld', is_flag=True, help='Load Model?')
+@ck.option("--alpha-test", "-at", default=0.5)
+@ck.option("--combine", "-c", is_flag=True)
 @ck.option(
     '--device', '-d', default='cuda',
     help='Device')
-def main(data_root, ont, model_name, batch_size, epochs, load, device):
-    seed_everything(0)
+@ck.option("--run", "-r", default=0)
+def main(data_root, ont, model_name, batch_size, epochs, load, alpha_test, combine, device, run):
+    # seed_everything(0)
     go_file = f'{data_root}/go-basic.obo'
-    model_file = f'{data_root}/{ont}/{model_name}.th'
-    out_file = f'{data_root}/{ont}/predictions_{model_name}.pkl'
+    model_file = f'{data_root}/{ont}/{model_name}_{run}.th'
+    out_file = f'{data_root}/{ont}/predictions_{model_name}_{run}.pkl'
 
+
+    wandb_logger = wandb.init(project="final-dgpu-time-based", name= model_name, group= f"mlp-{ont}")
+    wandb.config.update({"data_root": data_root})
+    
+        
+    
     go = Ontology(go_file, with_rels=True)
     loss_func = nn.BCELoss()
     terms_dict, train_data, valid_data, test_data, test_df = load_data(data_root, ont)
     n_terms = len(terms_dict)
     
     net = DGPROModel(5120, n_terms, device).to(device)
+
+    wandb.watch(net)
     
     train_features, train_labels = train_data
     valid_features, valid_labels = valid_data
@@ -86,6 +100,9 @@ def main(data_root, ont, model_name, batch_size, epochs, load, device):
     scheduler = MultiStepLR(optimizer, milestones=[3,], gamma=0.1)
 
     best_loss = 10000.0
+    best_fmax = 0.0
+    tolerance = 5
+    curr_tolerance = tolerance
     if not load:
         print('Training the model')
         for epoch in range(epochs):
@@ -105,6 +122,8 @@ def main(data_root, ont, model_name, batch_size, epochs, load, device):
                     train_loss += loss.detach().item()
             
             train_loss /= train_steps
+            wandb.log({"train_loss": train_loss})
+                        
             
             print('Validation')
             net.eval()
@@ -122,17 +141,26 @@ def main(data_root, ont, model_name, batch_size, epochs, load, device):
                         valid_loss += batch_loss.detach().item()
                         preds = np.append(preds, logits.detach().cpu().numpy())
                 valid_loss /= valid_steps
-                roc_auc = compute_roc(valid_labels, preds)
-                print(f'Epoch {epoch}: Loss - {train_loss}, Valid loss - {valid_loss}, AUC - {roc_auc}')
-            if valid_loss < best_loss:
-                best_loss = valid_loss
+                #roc_auc = compute_roc(valid_labels, preds)
+                fmax = compute_fmax(valid_labels, preds)
+                wandb.log({"valid_loss": valid_loss, "valid_fmax": fmax})
+                
+                                
+            # if valid_loss < best_loss:
+            if fmax > best_fmax:
+                best_fmax = fmax
+                # best_loss = valid_loss
                 print('Saving model')
                 th.save(net.state_dict(), model_file)
-
+                curr_tolerance = tolerance
             # scheduler.step()
-            
-        log_file.close()
+            else:
+                curr_tolerance -= 1
 
+            if curr_tolerance == 0:
+                print('Early stopping')
+                break
+            
     # Loading best model
     print('Loading the best model')
     net.load_state_dict(th.load(model_file))
@@ -164,7 +192,13 @@ def main(data_root, ont, model_name, batch_size, epochs, load, device):
 
     test_df.to_pickle(out_file)
 
-
+    test(data_root, ont, model_name, run, combine, alpha_test, False, wandb_logger)
+    combine = True
+    test(data_root, ont, model_name, run, combine, alpha_test, False, wandb_logger)
+    
+    wandb.finish()
+    
+    
 def propagate_annots(preds, go, terms_dict):
     prop_annots = {}
     for go_id, j in terms_dict.items():
@@ -186,6 +220,13 @@ def compute_roc(labels, preds):
     roc_auc = auc(fpr, tpr)
 
     return roc_auc
+
+
+def compute_fmax(labels, preds):
+    labels[labels == -1] = 0
+    precisions, recalls, thresholds = precision_recall_curve(labels.flatten(), preds.flatten())
+    fmax = round(np.max(2 * (precisions * recalls) / (precisions + recalls + 1e-10)), 3)
+    return fmax
 
 
 class Residual(nn.Module):
@@ -243,7 +284,7 @@ def load_data(data_root, ont):
     
     train_df = pd.read_pickle(f'{data_root}/{ont}/train_data.pkl')
     valid_df = pd.read_pickle(f'{data_root}/{ont}/valid_data.pkl')
-    test_df = pd.read_pickle(f'{data_root}/{ont}/test_data.pkl')
+    test_df = pd.read_pickle(f'{data_root}/{ont}/test_data_lk.pkl')
 
     train_data = get_data(train_df, terms_dict)
     valid_data = get_data(valid_df, terms_dict)

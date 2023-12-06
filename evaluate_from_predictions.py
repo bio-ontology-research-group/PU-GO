@@ -15,38 +15,61 @@ from scipy import sparse
 import math
 from utils import FUNC_DICT, Ontology, NAMESPACES, EXP_CODES
 from matplotlib import pyplot as plt
-import os
-import pickle as pkl
-
+import wandb
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 
+from clearml import Task, Logger
 
-def test(data_root, ont, model, combine, alpha, tex_output, aggregator, wandb_logger):
+@ck.command()
+@ck.option(
+    '--data-root', '-dr', default='data',
+    help='Prediction model')
+@ck.option(
+    '--ont', '-ont', default='mf',
+    help='Prediction model')
+@ck.option(
+    '--model', '-m', default='deepgo2',
 
-    prop_annots_file = f"{data_root}/{ont}/propagated_annotations.pkl"
+    help='Prediction model')
+@ck.option(
+    '--combine', '-c', is_flag=True,
+    help='Prediction model')
+@ck.option(
+    '--alpha_diam', '-a', default=0.50,
+    help='Combining weight')
+@ck.option(
+    '--num-preds', '-np', default=50,
+    help='Combining weight')
+@ck.option("--tex-output", "-tex", is_flag=True)
+def main(data_root, ont, model, combine, alpha_diam, num_preds, tex_output):
+    
+
+    task = Task.init(project_name="deepgopu",
+                     task_name=f"pu_base_sample_prior",
+                     auto_connect_frameworks=False,
+                     continue_last_task=True,
+                     reuse_last_task_id=True)
+
+    cml_logger = task.get_logger()
+    
+    train_data_file = f'{data_root}/{ont}/train_data.pkl'
+    valid_data_file = f'{data_root}/{ont}/valid_data.pkl'
     test_data_file = f'{data_root}/{ont}/predictions_{model}.pkl'
+    # diam_data_file = f'{data_root}/{ont}/test_data_diam.pkl'
     terms_file = f'{data_root}/{ont}/terms.pkl'
     go_rels = Ontology(f'{data_root}/go-basic.obo', with_rels=True)
     terms_df = pd.read_pickle(terms_file)
     terms = terms_df['gos'].values.flatten()
     terms_dict = {v: i for i, v in enumerate(terms)}
 
-    if not os.path.exists(prop_annots_file):
-        train_data_file = f'{data_root}/{ont}/train_data.pkl'
-        valid_data_file = f'{data_root}/{ont}/valid_data.pkl'
-
-        train_df = pd.read_pickle(train_data_file)
-        valid_df = pd.read_pickle(valid_data_file)
-        train_df = pd.concat([train_df, valid_df])
-        annotations = train_df['prop_annotations'].values
-        annotations = list(map(lambda x: set(x), annotations))
-        pkl.dump(annotations, open(prop_annots_file, 'wb'))
-    else:
-        annotations = pkl.load(open(prop_annots_file, 'rb'))
-        
+    train_df = pd.read_pickle(train_data_file)
+    valid_df = pd.read_pickle(valid_data_file)
+    train_df = pd.concat([train_df, valid_df])
     test_df = pd.read_pickle(test_data_file)
     # diam_df = pd.read_pickle(diam_data_file)
     
+    annotations = train_df['prop_annotations'].values
+    annotations = list(map(lambda x: set(x), annotations))
     test_annotations = test_df['prop_annotations'].values
     test_annotations = list(map(lambda x: set(x), test_annotations))
     go_rels.calculate_ic(annotations + test_annotations)
@@ -58,18 +81,17 @@ def test(data_root, ont, model, combine, alpha, tex_output, aggregator, wandb_lo
     
     # Combine scores for diamond and deepgo
     eval_preds = []
- 
+    
     for i, row in enumerate(test_df.itertuples()):
-        row_preds = getattr(row, f"preds_{aggregator}")  #row[f"preds_{aggregator}"]
         if combine:
             diam_preds = np.zeros((len(terms),), dtype=np.float32)
             for go_id, score in diam_df.iloc[i]['diam_preds'].items():
                 if go_id in terms_dict:
                     diam_preds[terms_dict[go_id]] = score
         
-                preds = diam_preds * alpha + row_preds * (1 - alpha)
+                preds = diam_preds * alpha_diam + row.preds * (1 - alpha_diam)
         else:
-            preds = row_preds
+            preds = row.preds
         eval_preds.append(preds)
 
     labels = np.zeros((len(test_df), len(terms)), dtype=np.float32)
@@ -161,20 +183,41 @@ def test(data_root, ont, model, combine, alpha, tex_output, aggregator, wandb_lo
     print(f'AUPR: {aupr:0.3f}')
     print(f'AVGIC: {avgic:0.3f}')
 
-    wandb_logger.log({
-        f"fmax_{aggregator}": fmax,
-        f"smin_{aggregator}": smin,
-        f"aupr_{aggregator}": aupr,
-        f"avg_auc_{aggregator}": avg_auc,
-        f"wfmax_{aggregator}": wfmax,
-        f"avgic_{aggregator}": avgic,
-        f"threshold_{aggregator}": tmax,
-        f"w_threshold_{aggregator}": wtmax,
-        f"spec_{aggregator}": fmax_spec_match,
-        f"combine": combine      
-    })
+    # wandb.log({
+    #     "fmax": fmax,
+    #     "smin": smin,
+    #     "aupr": aupr,
+    #     "avg_auc": avg_auc,
+    #     "wfmax": wfmax,
+    #     "avgic": avgic,
+    #     "threshold": tmax,
+    #     "w_threshold": wtmax,
+    #     "spec": fmax_spec_match,
+    #     "combine": combine,
+        
+        
+    # })
 
 
+
+    
+    # wandb.finish()
+
+    cml_logger.report_single_value("fmax", fmax)
+    cml_logger.report_single_value("smin", smin)
+    cml_logger.report_single_value("aupr", aupr)
+    cml_logger.report_single_value("avg_auc", avg_auc)
+    cml_logger.report_single_value("wfmax", wfmax)
+    cml_logger.report_single_value("avgic", avgic)
+    cml_logger.report_single_value("threshold", tmax)
+    cml_logger.report_single_value("w_threshold", wtmax)
+    cml_logger.report_single_value("spec", fmax_spec_match)
+    cml_logger.report_single_value("combine", combine)
+
+    cml_logger.flush()
+    
+
+    
     if tex_output:
         tex = "& "
         tex += f"{fmax:0.3f} & {smin:0.3f} & {aupr:0.3f} & {avg_auc:0.3f} \\\\"

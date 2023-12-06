@@ -15,47 +15,20 @@ from scipy import sparse
 import math
 from utils import FUNC_DICT, Ontology, NAMESPACES, EXP_CODES
 from matplotlib import pyplot as plt
-import wandb
+
+
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 
-from clearml import Task, Logger
 
-@ck.command()
-@ck.option(
-    '--data-root', '-dr', default='data',
-    help='Prediction model')
-@ck.option(
-    '--ont', '-ont', default='mf',
-    help='Prediction model')
-@ck.option(
-    '--model', '-m', default='deepgo2',
-
-    help='Prediction model')
-@ck.option(
-    '--combine', '-c', is_flag=True,
-    help='Prediction model')
-@ck.option(
-    '--alpha_diam', '-a', default=0.50,
-    help='Combining weight')
-@ck.option(
-    '--num-preds', '-np', default=50,
-    help='Combining weight')
-@ck.option("--tex-output", "-tex", is_flag=True)
-def main(data_root, ont, model, combine, alpha_diam, num_preds, tex_output):
-    
-
-    task = Task.init(project_name="deepgopu",
-                     task_name=f"pu_base_sample_prior",
-                     auto_connect_frameworks=False,
-                     continue_last_task=True,
-                     reuse_last_task_id=True)
-
-    cml_logger = task.get_logger()
+def test(data_root, ont, model, run, combine, alpha, tex_output, wandb_logger):
     
     train_data_file = f'{data_root}/{ont}/train_data.pkl'
     valid_data_file = f'{data_root}/{ont}/valid_data.pkl'
-    test_data_file = f'{data_root}/{ont}/predictions_{model}.pkl'
-    # diam_data_file = f'{data_root}/{ont}/test_data_diam.pkl'
+    test_data_file = f'{data_root}/{ont}/predictions_{model}_{run}.pkl'
+    if combine:
+        diam_data_file = f'{data_root}/{ont}/test_data_diam.pkl'
+        diam_df = pd.read_pickle(diam_data_file)
+
     terms_file = f'{data_root}/{ont}/terms.pkl'
     go_rels = Ontology(f'{data_root}/go-basic.obo', with_rels=True)
     terms_df = pd.read_pickle(terms_file)
@@ -66,7 +39,7 @@ def main(data_root, ont, model, combine, alpha_diam, num_preds, tex_output):
     valid_df = pd.read_pickle(valid_data_file)
     train_df = pd.concat([train_df, valid_df])
     test_df = pd.read_pickle(test_data_file)
-    # diam_df = pd.read_pickle(diam_data_file)
+    
     
     annotations = train_df['prop_annotations'].values
     annotations = list(map(lambda x: set(x), annotations))
@@ -89,7 +62,7 @@ def main(data_root, ont, model, combine, alpha_diam, num_preds, tex_output):
                 if go_id in terms_dict:
                     diam_preds[terms_dict[go_id]] = score
         
-                preds = diam_preds * alpha_diam + row.preds * (1 - alpha_diam)
+                preds = diam_preds * alpha + row.preds * (1 - alpha)
         else:
             preds = row.preds
         eval_preds.append(preds)
@@ -183,39 +156,33 @@ def main(data_root, ont, model, combine, alpha_diam, num_preds, tex_output):
     print(f'AUPR: {aupr:0.3f}')
     print(f'AVGIC: {avgic:0.3f}')
 
-    # wandb.log({
-    #     "fmax": fmax,
-    #     "smin": smin,
-    #     "aupr": aupr,
-    #     "avg_auc": avg_auc,
-    #     "wfmax": wfmax,
-    #     "avgic": avgic,
-    #     "threshold": tmax,
-    #     "w_threshold": wtmax,
-    #     "spec": fmax_spec_match,
-    #     "combine": combine,
-        
-        
-    # })
+    if combine:
+        wandb_logger.log({
+            "fmax_diam": fmax,
+            "smin_diam": smin,
+            "aupr_diam": aupr,
+            "avg_auc_diam": avg_auc,
+            "wfmax_diam": wfmax,
+            "avgic_diam": avgic,
+            "threshold_diam": tmax,
+            "w_threshold_diam": wtmax,
+            "spec_diam": fmax_spec_match,
+            "combine_diam": combine
+        })
+    else:
+        wandb_logger.log({
+            "fmax": fmax,
+            "smin": smin,
+            "aupr": aupr,
+            "avg_auc": avg_auc,
+            "wfmax": wfmax,
+            "avgic": avgic,
+            "threshold": tmax,
+            "w_threshold": wtmax,
+            "spec": fmax_spec_match,
+            "combine": combine
+        })
 
-
-
-    
-    # wandb.finish()
-
-    cml_logger.report_single_value("fmax", fmax)
-    cml_logger.report_single_value("smin", smin)
-    cml_logger.report_single_value("aupr", aupr)
-    cml_logger.report_single_value("avg_auc", avg_auc)
-    cml_logger.report_single_value("wfmax", wfmax)
-    cml_logger.report_single_value("avgic", avgic)
-    cml_logger.report_single_value("threshold", tmax)
-    cml_logger.report_single_value("w_threshold", wtmax)
-    cml_logger.report_single_value("spec", fmax_spec_match)
-    cml_logger.report_single_value("combine", combine)
-
-    cml_logger.flush()
-    
 
     
     if tex_output:
