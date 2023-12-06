@@ -236,9 +236,7 @@ def main(data_root, ont, model_name, batch_size, epochs, load, alpha_test, combi
     test_df.to_pickle(out_file)
 
     test(data_root, ont, model_name, run, combine, alpha_test, False, wandb_logger)
-    combine = True
-    test(data_root, ont, model_name, run, combine, alpha_test, False, wandb_logger)
-    
+        
     wandb.finish()
     
     
@@ -284,9 +282,10 @@ class Residual(nn.Module):
         
 class MLPBlock(nn.Module):
 
-    def __init__(self, in_features, out_features, bias=True, layer_norm=True, dropout=0.5, activation=nn.ReLU):
+    def __init__(self, in_features, out_features, bias=True, layer_norm=True, dropout=0.3, activation=nn.ReLU):
         super().__init__()
         self.linear = nn.Linear(in_features, out_features, bias)
+        nn.init.xavier_uniform_(self.linear.weight)
         self.activation = activation()
         self.layer_norm = nn.LayerNorm(out_features) if layer_norm else None
         self.dropout = nn.Dropout(dropout) if dropout else None
@@ -307,13 +306,12 @@ class DGPROModel(nn.Module):
         self.nb_gos = nb_gos
         input_length = 5120 + 1024 + 1
         net = []
-        # for hidden_dim in nodes:
-        hid_dim = 512
-        net.append(MLPBlock(input_length, hid_dim))
-        net.append(MLPBlock(hid_dim, 1, activation=nn.Identity))
-            # net.append(Residual(MLPBlock(hidden_dim, 1)))
-            # input_length = hidden_dim
-        # net.append(nn.Linear(input_length, 1))
+        for hidden_dim in nodes:
+        # hid_dim = 512
+            net.append(MLPBlock(input_length, hidden_dim))
+            net.append(Residual(MLPBlock(hidden_dim, hidden_dim)))
+            input_length = hidden_dim
+        net.append(nn.Linear(input_length, 1))
         net.append(nn.Sigmoid())
         self.net = nn.Sequential(*net)
         
@@ -333,6 +331,8 @@ def load_data(data_root, ont):
     go_embeds = pkl.load(open(f'{data_root}/el.pkl', 'rb'))
     go_embeds = {go_name: go_embeds["http://purl.obolibrary.org/obo/"+go_name.replace(":", "_")].detach().cpu() for go_name in terms_dict.keys()}
     go_embeds = th.stack(list(go_embeds.values()))
+    # go_embeds -= th.min(go_embeds)
+    # go_embeds /= th.max(go_embeds)
     
     train_df = pd.read_pickle(f'{data_root}/{ont}/train_data.pkl')
     valid_df = pd.read_pickle(f'{data_root}/{ont}/valid_data.pkl')
@@ -356,6 +356,9 @@ def get_data(df, terms_dict):
             if go_id in terms_dict:
                 g_id = terms_dict[go_id]
                 labels[i, g_id] = 1
+
+    # data -= th.min(data)
+    # data /= th.max(data)
     return data, labels
 
 class GODataset(Dataset):

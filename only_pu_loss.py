@@ -270,18 +270,11 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
     model_file = f'{data_root}/{ont}/{model_name}.th'
     out_file = f'{data_root}/{ont}/predictions_{model_name}_{run}.pkl'
 
-
-    
-
-
-    
     go = Ontology(go_file, with_rels=True)
     terms_dict, train_data, valid_data, test_data, test_df = load_data(data_root, ont, go)
 
     n_terms = len(terms_dict)
 
-    
-        
     train_features, train_labels, terms_count = train_data
     valid_features, valid_labels, _ = valid_data
     test_features, test_labels, _ = test_data

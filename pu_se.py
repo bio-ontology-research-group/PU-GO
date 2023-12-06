@@ -92,7 +92,7 @@ class MLPBlock(nn.Module):
             x = self.dropout(x)
         return x
 
-class DGPROModel(nn.Module):
+class DGPROModel2(nn.Module):
     def __init__(self, nb_gos, nodes=[2048,]):
         super().__init__()
         self.nb_gos = nb_gos
@@ -107,6 +107,40 @@ class DGPROModel(nn.Module):
     def forward(self, features):
         return self.net(features)
 
+
+class DGPROModel(nn.Module):
+    def __init__(self, nb_gos, nodes=[2048,]):
+        super().__init__()
+        self.nb_gos = nb_gos
+        input_length = 5120
+        net = []
+        for hidden_dim in nodes:
+            net.append(MLPBlock(input_length, hidden_dim))
+            net.append(Residual(MLPBlock(hidden_dim, hidden_dim)))
+            input_length = hidden_dim
+        net.append(nn.Linear(input_length, nb_gos))
+        self.net = nn.Sequential(*net)
+        
+    def forward(self, features):
+        return self.net(features)
+
+class PriorGenerator(nn.Module):
+    def __init__(self, nodes=[1024,]):
+        super().__init__()
+        input_length = 2048 + 1
+        net = []
+        for hidden_dim in nodes:
+            net.append(MLPBlock(input_length, hidden_dim))
+            net.append(Residual(MLPBlock(hidden_dim, hidden_dim)))
+            input_length = hidden_dim
+        net.append(nn.Linear(input_length, 1))
+        net.append(nn.Sigmoid())
+        self.net = nn.Sequential(*net)
+        
+    def forward(self, features):
+        return self.net(features)
+        
+    
 class PFModule(nn.Module):
     def __init__(self, el_module, esm_dim, el_dim, nb_classes, nb_roles, terms_dict, has_func_id):
         super(PFModule, self).__init__()
@@ -119,7 +153,8 @@ class PFModule(nn.Module):
         self.module_name = el_module
         self._set_module(el_module)
 
-        self.projection = DGPROModel(nb_classes)
+        self.projection = DGPROModel(len(terms_dict))
+        self.sem_prior_generator = PriorGenerator()
         
         self.terms_dict = terms_dict
         self.go_terms_ids = th.tensor([list(self.terms_dict.values())], dtype=th.long)
@@ -141,6 +176,9 @@ class PFModule(nn.Module):
         return self.el_module(*args, **kwargs)
 
     def pf_forward(self, features):
+        return self.projection(features)
+    
+    def pf_forward2(self, features):
         el_features = self.projection(features)
         go_terms_ids = self.go_terms_ids.to(el_features.device)
         has_func_id = self.has_func_id.to(el_features.device)
@@ -161,33 +199,56 @@ class PFModule(nn.Module):
                                             
         return membership
 
+
+    def get_semantic_priors(self):
+        go_terms_ids = self.go_terms_ids.to(self.el_module.class_embed.weight.device)
+        class_center = self.el_module.class_embed(go_terms_ids).squeeze(0)
+        class_rad = self.el_module.class_rad(go_terms_ids).squeeze(0)
+        go_embeds = th.cat((class_center, class_rad), dim=1)
+        
+        return self.sem_prior_generator(go_embeds)
+
     
 class DeepGOPU(EmbeddingELModel):
-    def __init__(self, data_root, model_name, load, ont, pf_data, go_ont, el_module, num_models, max_lr, probability, probability_rate, alpha, beta, prior, gamma, loss_type, *args, **kwargs):
+    def __init__(self, data_root, model_name, load, ont, pf_data, go_ont, el_module, num_models, max_lr, min_lr_factor, prior, gamma, margin, pu_margin_factor, predictions_file, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        
+        self.data_root = data_root
+        self.model_name = model_name
+        self.load = load
+        self.ont = ont
+        self.pf_data = pf_data
+        self.go_ont = go_ont
+        self.el_module = el_module
+        self.num_models = num_models
+        self.max_lr = max_lr
+        self.min_lr_factor = min_lr_factor
+        self.prior = prior
+        self.gamma = gamma
+        self.margin = margin
+        self.pu_margin_factor = pu_margin_factor
+        self.predictions_file = predictions_file
+
+        self.pu_margin = self.prior * self.pu_margin_factor
+
+        # self.el_weight = nn.Parameter(th.tensor(0.5, dtype=th.float32, requires_grad=True))
+        # self.pu_weight = nn.Parameter(th.tensor(0.5, dtype=th.float32, requires_grad=True))
+
+        
+        
+        self.load_el_data()
+        
         self.terms_dict, train_data, valid_data, test_data, self.test_df = pf_data
         self.train_features, self.train_labels, self.terms_count = train_data
         self.valid_features, self.valid_labels, _ = valid_data
         self.test_features, self.test_labels, _ = test_data
-        
-        self.data_root = data_root
-        self.ont = ont
-        self.go_ont = go_ont
 
-        self.load_el_data()
+        max_count = max(self.terms_count.values())
+        self.priors = [self.prior*x/max_count for x in self.terms_count.values()]
+        self.priors = th.tensor(self.priors, dtype=th.float32, requires_grad = False).to(self.device)
         
-        self.load = load
-        self.module = el_module
-        self.num_models = num_models
-        self.max_lr = max_lr
-        self.probability = probability
-        self.probability_rate = probability_rate
-        self.alpha = alpha
-        self.beta = beta
         
-        self.out_file = f'{data_root}/{ont}/predictions_{model_name}.pkl'
-
         self.nb_classes = len(self.dataset.classes)
         self.nb_roles = len(self.dataset.object_properties)
         has_func_owl = self.dataset.object_properties.to_dict()["http://mowl/has_function"]
@@ -195,27 +256,13 @@ class DeepGOPU(EmbeddingELModel):
 
         self.nb_gos = len(self.terms_dict)
 
-        self.prior = prior
-        self.gamma = gamma
-
-        self.loss_type = loss_type
-        
-        max_count = max(self.terms_count.values())
-        print(f"max_count: {max_count}")
-        # self.priors = [self.prior*x for x in terms_count.values()]
-        self.priors = [min(x/max_count, self.prior) for x in self.terms_count.values()]
-        self.priors = th.tensor(self.priors, dtype=th.float32, requires_grad=False).to(self.device)
-        self.weights = [1/max_count for x in self.terms_count.values()]
-        self.weights = [1 for x in self.terms_count.values()]
-        self.weights = th.tensor(self.weights, dtype=th.float32, requires_grad=False).to(self.device)
-        
         self._init_modules()
 
     def _init_modules(self):
         logger.info("Initializing modules...")
         modules = []
         for i in range(self.num_models):
-            module = PFModule(self.module,
+            module = PFModule(self.el_module,
                               5120,
                               self.embed_dim,
                               self.nb_classes,
@@ -226,79 +273,53 @@ class DeepGOPU(EmbeddingELModel):
         self.modules = nn.ModuleList(modules)
         logger.info(f"Number of models created: {len(modules)}")
     
-
-    def pun_loss_multi(self, pred, labels, p=1):
+    def pu_loss(self, preds, labels):
         
         pos_label = (labels == 1).float()
-        unl_label = (labels == 0).float()
-        neg_label = (labels == -1).float()
+        unl_label = (labels != 1).float()
 
-                        
-        p_above = - (F.logsigmoid(pred) * pos_label).sum(dim=0) / pos_label.sum()
-        p_below = - (F.logsigmoid(-pred) * pos_label).sum(dim=0) / pos_label.sum()
-        u_below = - (F.logsigmoid(-pred) * unl_label).sum(dim=0) / unl_label.sum()
+        p_above = - (F.logsigmoid(preds)*pos_label).sum() / pos_label.sum()
+        p_below = - (F.logsigmoid(-preds)*pos_label).sum() / pos_label.sum()
+        u_below = - (F.logsigmoid(-preds)*unl_label).sum() / unl_label.sum()
 
-        if neg_label.sum() > 0:
-            n_below = - (F.logsigmoid(-pred) * neg_label).sum(dim=0) / neg_label.sum()
-            gamma = self.gamma #0.01 #self.gamma 
-        else:
-            n_below = 0
-            gamma = 0
-
-        margin = 0 #- self.priors / 16
-        loss = self.priors * p_above + th.relu(gamma * (1 - self.priors) * n_below +
-                                              (1 - gamma) * (u_below - self.priors * p_below + margin))
-        loss = self.weights * loss
-        loss = loss.sum()
-        assert loss >= 0, f"loss: {loss}"
+        loss = self.prior * p_above + th.relu(u_below - self.prior*p_below + self.pu_margin)
         return loss
 
 
-    def pu_ranking_loss(self, data, labels):
-        pred = self.dgpro(data)
-
+    def pu_ranking_loss(self, preds, labels):
+        
         pos_label = (labels == 1).float()
-        unl_label = (labels == 0).float()
-        neg_label = (labels == -1).float()
+        unl_label = (labels != 1).float()
 
-        p_above = - (F.logsigmoid(pred) * pos_label).sum() / pos_label.sum()
-        p_below = - (th.log(1 - th.sigmoid(pred) + 1e-10) * pos_label).sum() / pos_label.sum()
+        p_above = - (F.logsigmoid(preds)*pos_label).sum() / pos_label.sum()
+        p_below = - (F.logsigmoid(-preds)*pos_label).sum() / pos_label.sum()
+        u_below = - (F.logsigmoid(preds * pos_label - preds*unl_label)).sum() / unl_label.sum()
 
-        u_0 = - F.logsigmoid((pred * pos_label).sum()/ pos_label.sum() - (pred*unl_label).sum() / unl_label.sum())
-        if neg_label.sum() > 0:
-            u_1 = - F.logsigmoid((pred * pos_label).sum()/ pos_label.sum() - (pred*neg_label).sum() / neg_label.sum())
-            u = (u_0 + self.lmbda * u_1) / (1 + self.lmbda)
-        else:
-            u = u_0
+        loss = self.prior * p_above + th.relu(u_below - self.prior*p_below + self.margin)
+        return loss
 
-        return self.prior * p_above + th.relu(- self.prior * p_below + u)
-                                                                 
+
+    def pu_ranking_loss_multi(self, preds, labels, sem_priors):
+        # priors = (self.priors + sem_priors) / 2
+        # priors = (self.priors + sem_priors) /2
+        priors = sem_priors
+        pos_label = (labels == 1).float()
+        unl_label = (labels != 1).float()
+
+        p_above = - (F.logsigmoid(preds)*pos_label).sum(dim=0) / pos_label.sum()
+        p_below = - (F.logsigmoid(-preds)*pos_label).sum(dim=0) / pos_label.sum()
+        u_below = - (F.logsigmoid(preds * pos_label - preds*unl_label)).sum(dim=0) / unl_label.sum()
+
+        # self.pu_margin = 0
+        loss = priors * p_above + th.relu(u_below - priors*p_below + self.pu_margin)
+        loss = loss.sum()
+        return loss
     
-    def forward(self, data, labels, p=1):
-        # return self.pu_ranking_loss(data, labels)
-        if self.loss_type == 'pu':
-            return self.pu_loss(data, labels)
-        if self.loss_type == 'pu_multi':
-            return self.pu_loss_multi(data, labels)
-        elif self.loss_type == "pun":
-            return self.pun_loss(data, labels)
-        elif self.loss_type == "pun_multi":
-            return self.pun_loss_multi(data, labels, p=p)
-        else:
-            raise NotImplementedError
-
-    def logits(self, data):
-        return self.dgpro(data)
     
-    def predict(self, data):
-        return th.sigmoid(self.dgpro(data))
- 
     def load_el_data(self):
         logger.info("Loading EL data...")
         start = time.time()
                                                                 
-        
-        
         el_dls = {gci_name: DataLoader(ds, batch_size=self.batch_size, shuffle=True) for gci_name, ds in self.training_datasets.items() if len(ds) > 0}
 
         el_dls_sizes = {gci_name: len(ds) for gci_name, ds in self.training_datasets.items() if len(ds) > 0}
@@ -327,7 +348,8 @@ class DeepGOPU(EmbeddingELModel):
 
                 optimizer = th.optim.Adam(module.parameters(), lr=self.max_lr)
                 scheduler = MultiStepLR(optimizer, milestones=[1, 3,], gamma=0.1)
-                min_lr = self.max_lr /100
+                min_lr = self.max_lr * self.min_lr_factor
+                step_size_up = len(train_loader) * 2
                 scheduler = CyclicLR(optimizer, base_lr=min_lr, max_lr=self.max_lr, step_size_up=20, cycle_momentum=False)
                 
                 tolerance = 5
@@ -339,11 +361,10 @@ class DeepGOPU(EmbeddingELModel):
                 best_loss = 10000.0
                 best_fmax = 0.0
                 for epoch in range(epochs):
-                    self.probability += self.probability_rate
+                    
                     module.train()
-                    train_pu_loss = 0
                     train_el_loss = 0
-                    train_bce_loss = 0
+                    train_pu_loss = 0
                     train_steps = int(math.ceil(len(self.train_labels) / self.batch_size))
                     with ck.progressbar(length=train_steps, show_pos=True) as bar:
                         for batch_features, batch_labels in train_loader:
@@ -351,36 +372,33 @@ class DeepGOPU(EmbeddingELModel):
                             batch_features = batch_features.to(self.device)
                             batch_labels = batch_labels.to(self.device)
                             mem_logits = module.pf_forward(batch_features)
-                            
-                            pu_loss = self.pun_loss_multi(mem_logits, batch_labels)
-                            batch_labels = (batch_labels == 1).float()
-                            bce_loss = bce(mem_logits, batch_labels)
-                            
+                            sem_priors = module.get_semantic_priors()
+                            pu_loss = self.pu_ranking_loss_multi(mem_logits, batch_labels, sem_priors)
+                                                        
                             el_loss = 0
                             for gci_name, dl in self.el_dls.items():
-                                
                                 gci_batch = next(dl).to(self.device)
-                                pos_gci = module.el_forward(gci_batch, gci_name).mean()
+                                pos_gci = module.el_forward(gci_batch, gci_name)#.mean()
                                 neg_idxs = np.random.choice(self.nb_classes, size=len(gci_batch), replace=True)
                                 neg_batch = th.tensor(neg_idxs, dtype=th.long, device=self.device)
                                 neg_data = th.cat((gci_batch[:, :2], neg_batch.unsqueeze(1)), dim=1)
-                                neg_gci = module.el_forward(neg_data, gci_name).mean()# * el_dls_weights[gci_name]
-                                margin = 0 
-                                el_loss += -F.logsigmoid(-pos_gci + neg_gci - margin).mean()
-
-                            loss = self.beta * el_loss + (1-self.beta)*((1-self.alpha)*bce_loss + self.alpha * pu_loss)
-                                                        
+                                neg_gci = module.el_forward(neg_data, gci_name)#.mean() #* self.el_dls_weights[gci_name]
+                                el_loss += -F.logsigmoid(-pos_gci + neg_gci - self.margin).mean()
+                                
+                            loss = el_loss + pu_loss
+                            # loss = self.el_weight * el_loss + self.pu_weight * pu_loss
+                            
                             optimizer.zero_grad()
                             loss.backward()
                             optimizer.step()
-                            train_pu_loss += pu_loss.item()
                             train_el_loss += el_loss.item()
-                            train_bce_loss += bce_loss.item()
-                    train_pu_loss /= train_steps
+                            train_pu_loss += pu_loss.item()
+                            scheduler.step()
+                            
                     train_el_loss /= train_steps
-                    train_bce_loss /= train_steps
+                    train_pu_loss /= train_steps
 
-                    wandb.log({"train_pu_loss": train_pu_loss, "train_el_loss": train_el_loss, "train_bce_loss": train_bce_loss})
+                    wandb.log({"train_el_loss": train_el_loss, "train_pu_loss": train_pu_loss})
                     
                     print('Validation')
                     module.eval()
@@ -394,17 +412,17 @@ class DeepGOPU(EmbeddingELModel):
                                 batch_features = batch_features.to(self.device)
                                 batch_labels = batch_labels.to(self.device)
 
-                                mem_logits = th.sigmoid(module.pf_forward(batch_features))
+                                mem_logits = module.pf_forward(batch_features)
                                 bce_loss = bce(mem_logits, batch_labels)
-
                                 valid_loss += bce_loss.detach().item()
-                                preds = np.append(preds, mem_logits.detach().cpu().numpy())
+
+                                mem_logits = th.sigmoid(mem_logits).detach().cpu().numpy()
+                                preds = np.append(preds, mem_logits)
                                 
                         valid_loss /= valid_steps
                         valid_fmax = compute_fmax(self.valid_labels, preds)
                         wandb.log({"valid_loss": valid_loss, "valid fmax": valid_fmax})
-                        print(f'Epoch {epoch}: PF Loss - {train_pu_loss:.6f}, EL Loss - {train_el_loss:.6f}, BCE Loss - {train_bce_loss:.6f}, Valid loss - {valid_loss:.6f}, Valid Fmax - {valid_fmax:.6f}')
-
+                        
                     if valid_fmax > best_fmax:
                         best_fmax = valid_fmax
                         print('Saving model')
@@ -417,7 +435,7 @@ class DeepGOPU(EmbeddingELModel):
                         print('Early stopping')
                         break
 
-                    scheduler.step()
+                    
 
     def predict(self):
         test_loader = FastTensorDataLoader(self.test_features, self.test_labels, batch_size=self.batch_size, shuffle=False)
@@ -446,11 +464,12 @@ class DeepGOPU(EmbeddingELModel):
                         batch_features = batch_features.to(self.device)
                         batch_labels = batch_labels.to(self.device)
                         
-                        logits = th.sigmoid(module.pf_forward(batch_features))
+                        logits = module.pf_forward(batch_features)
                         batch_loss = bce(logits, batch_labels)
                         test_loss += batch_loss.detach().cpu().item()
-                        
-                        preds.append(logits.detach().cpu().numpy())
+
+                        logits = th.sigmoid(logits).detach().cpu().numpy()
+                        preds.append(logits)
                     test_loss /= test_steps
                     preds = np.concatenate(preds)
                     roc_auc = 0 # compute_roc(self.test_labels, preds)
@@ -488,100 +507,62 @@ class DeepGOPU(EmbeddingELModel):
         for agg_name, preds in agg_preds.items():
             self.test_df[f'preds_{agg_name}'] = preds
             
-        self.test_df.to_pickle(self.out_file)
+        self.test_df.to_pickle(self.predictions_file)
 
 
 @ck.command()
 @ck.option(
-    '--data-root', '-dr', default='data',
-    help='Prediction model')
-@ck.option(
-    '--ont', '-ont', default='mf',
-    help='Prediction model')
-@ck.option(
-    "--el-model", "-el", default="elem", type=ck.Choice(["elem", "elbox", "box2el"]),
-    help="Semantic method")
-@ck.option(
-    "--num-models", "-nmodels", default = 1
-    )
-@ck.option(
-    '--model-name', '-mn', default='dgpu-pu-base',
-    help='Prediction model')
-@ck.option(
-    '--batch-size', '-bs', default=256,
-    help='Batch size for training')
-@ck.option(
-    '--epochs', '-ep', default=256,
-    help='Training epochs')
-@ck.option(
-    '--prior', '-p', default=1e-4,
-    help='Prior')
+    '--data_root', '-dr', default='data', help='Prediction model')
+@ck.option( '--ont', '-ont', default='mf', help='Prediction model')
+@ck.option("--el_model", "-el", default="elem", type=ck.Choice(["elem", "elbox", "box2el"]))
+@ck.option("--num_models", "-nmodels", default = 1)
+@ck.option('--model_name', '-mn', default='dg-sem-base', help='Prediction model')
+@ck.option('--batch_size', '-bs', default=256, help='Batch size for training')
+@ck.option('--epochs', '-ep', default=256, help='Training epochs')
+@ck.option('--prior', '-p', default=1e-4, help='Prior')
 @ck.option("--gamma", '-g', default = 0.01)
-@ck.option('--probability', '-prob', default=0.0, help='Initial probability of chosing unlabeled samples')
-@ck.option("--probability-rate", '-prate', default = 0.01)
-@ck.option("--alpha", '-a', default = 0.5, help="Weight of the BCE loss")
-@ck.option("--beta", '-b', default = 0.1, help="Weight of the EL loss. Using best one from semantic baseline")
-@ck.option('--loss_type', '-loss', default='pu', type=ck.Choice(['pu', 'pun', 'pu_multi', 'pun_multi']))
+@ck.option("--margin", '-m', default = 0.1)
 @ck.option('--max_lr', '-lr', default=1e-4)
+@ck.option('--min_lr_factor', '-mlr', default=0.01)
+@ck.option('--pu_margin_factor', '-pmf', default=0.1)
 @ck.option('--alpha_test', '-at', default=0.5)
 @ck.option("--combine", '-c', is_flag=True)
-@ck.option(
-    '--load', '-ld', is_flag=True, help='Load Model?')
-@ck.option(
-    '--device', '-d', default='cuda',
-    help='Device')
-def main(data_root, ont, el_model, num_models, model_name, batch_size, epochs, prior, gamma, probability, probability_rate, alpha, beta, loss_type, max_lr, alpha_test, combine, load, device):
+@ck.option('--load', '-ld', is_flag=True, help='Load Model?')
+@ck.option('--device', '-d', default='cuda', help='Device')
+def main(data_root, ont, el_model, num_models, model_name, batch_size, epochs, prior, gamma, margin, max_lr, min_lr_factor, pu_margin_factor, alpha_test, combine, load, device):
 
     
     train_file = f'{data_root}/{ont}/train_normalized.owl'
     valid_file = f'{data_root}/{ont}/valid.owl'
     test_file = f'{data_root}/{ont}/test.owl'
     
-    log_file = f"result_sem_{ont}.log"
-    params = f"ont: {ont},"
-    params += f"el_model: {el_model},"
-    params += f" batch_size: {batch_size},"
-    params += f" prior: {prior},"
-    params += f" gamma: {gamma},"
-    params += f" probability: {probability},"
-    params += f" p_rate: {probability_rate},"
-    params += f" alpha: {alpha},"
-    params += f" beta: {beta},"
-
-    
-    with open(log_file, "a") as f:
-        f.write(params + "\n")
-
-    # cc best params: alpha 0.1, prob 0, p_rate 0.01
-    
-    seed_everything(0)
-
-    
-    
     go_file = f'{data_root}/go-basic.obo'
     go = Ontology(go_file, with_rels=True)
     pf_data = load_data(data_root, ont, go)
 
-    model_name = f"{model_name}_{ont}_{el_model}_prob{probability}_alpha{alpha}_gamma{gamma}"
+    name = f"{ont}_{el_model}_pu_ranking"
 
-    sim = "_sim" if "sim" in data_root else ""
-    wandb_logger = wandb.init(project="dgpu_se" + sim, name=model_name, group = ont +"_class_prior")
-    wandb.config.update({"root": data_root,
-                         "ont": ont,
-                         "el_model": el_model,
-                         "num_models": num_models,
-                         "model_name": model_name,
-                         "batch_size": batch_size,
-                         "prior": prior,
-                         "gamma": gamma,
-                         "probability": probability,
-                         "p_rate": probability_rate,
-                         "alpha": alpha,
-                         "beta": beta,
-                         "loss_type": loss_type,
-                         "max_lr": max_lr})
     
+    wandb_logger = wandb.init(project="dgpu-similarity-based", name=name, group=name)
+
+    wandb_logger.log({"data_root": data_root,
+                      "ont": ont,
+                      "el_model": el_model,
+                      "num_models": num_models,
+                      "batch_size": batch_size,
+                      "prior": prior,
+                      "gamma": gamma,
+                      "margin": margin,
+                      "max_lr": max_lr,
+                      "min_lr_factor": min_lr_factor,
+                      "pu_margin_factor": pu_margin_factor
+                      })
+                    
+
+    
+    model_name = f"{model_name}_{el_model}_{num_models}_bs{batch_size}_p{prior}_g{gamma}_lr{max_lr}_mlr{min_lr_factor}_m{margin}"
     model_file = f'{data_root}/{ont}/{model_name}.th'
+    predictions_file = f'{data_root}/{ont}/predictions_{model_name}.pkl'
     logger.info(f"Creating mOWL dataset")
     start = time.time()
     dataset = PFDataset(train_file, valid_file, test_file)
@@ -592,7 +573,7 @@ def main(data_root, ont, el_model, num_models, model_name, batch_size, epochs, p
 
     
 
-    model = DeepGOPU(data_root, model_name, load, ont, pf_data, go, el_model, num_models, max_lr, probability, probability_rate, alpha, beta, prior, gamma, loss_type, dataset, el_dim, batch_size, device = device, model_filepath = model_file)
+    model = DeepGOPU(data_root, model_name, load, ont, pf_data, go, el_model, num_models, max_lr, min_lr_factor, prior, gamma, margin, pu_margin_factor, predictions_file,  dataset, el_dim, batch_size, device = device, model_filepath = model_file)
 
     wandb.watch(model.modules)
     
@@ -682,68 +663,6 @@ def get_data(df, terms_dict, go_ont, data_root="data/"):
                 labels[i, g_id] = 1
                 terms_count[go_id] += 1
 
-        # for go_id in row.neg_annotations:
-            # if go_id in terms_dict:
-                # g_id = terms_dict[go_id]
-                # labels[i, g_id] = -1
-
-                # if go_id in children:
-                    # descendants = children[go_id]
-                # else:
-                    # descendants = go_ont.get_term_set(go_id)
-                    # children[go_id] = descendants
-                    
-                # neg_idx = [terms_dict[go] for go in descendants if go in terms_dict]
-                # labels[i, neg_idx] = -1
-                
-                
-        
-    go_terms = set(terms_dict.keys())
-    # Loading negatives from GOA
-    goa_negs_file = f"{data_root}/goa_negative_data.txt"
-    negs = set()
-    with open(goa_negs_file) as f:
-        for line in f:
-            prot, go = line.strip().split("\t")
-            negs.add((prot, go))
-
-    # Adding InterPro negatives
-    # interpro_gos = pd.read_pickle(f"{data_root}/interpro_gos.pkl")
-    # ipr_gos = set(interpro_gos["gos"].values.flatten())
-
-    
-    
-    
-    for i, row in tqdm(enumerate(df.itertuples()), total=len(df), desc="Getting data"):
-        neg_gos = set()
-        for prot_ac in row.accessions:
-            neg_gos.update([go for go in terms_dict if (prot_ac, go) in negs])
-
-        # ipr2go_pos = row.interpro2go
-        # ipr2go_neg = ipr_gos - ipr2go_pos
-        # ipr2go_neg = ipr2go_neg & go_terms
-        # neg_gos.update(ipr2go_neg)
-            
-        all_negs = set()
-        for neg in neg_gos:
-            all_negs.add(neg)
-            continue
-            if neg in children:
-                descendants = children[neg]
-            else:
-                descendants = go_ont.get_term_set(neg)
-                children[neg] = descendants
-            # print(descendants)
-            all_negs.update(descendants)
-
-        neg_idxs = [terms_dict[go] for go in all_negs if go in terms_dict] 
-         
-        labels[i][neg_idxs] = -1
-
-    num_negs = (labels == -1).sum()
-
-    print(f"Avg number of negatives {num_negs / len(df)}")
-    
     return data, labels, terms_count
 
 
