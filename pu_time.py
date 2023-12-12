@@ -20,6 +20,8 @@ import sys
 from tqdm import tqdm
 import math
 
+from models import PUModel
+
 from evaluate import test
 
 import wandb
@@ -28,116 +30,6 @@ import logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-class Residual(nn.Module):
-    def __init__(self, fn):
-        super().__init__()
-        self.fn = fn
-
-    def forward(self, x):
-        return x + self.fn(x)
-    
-class MLPBlock(nn.Module):
-    def __init__(self, in_features, out_features, bias=True, layer_norm=True, dropout=0.5, activation=nn.ReLU):
-        super().__init__()
-        self.linear = nn.Linear(in_features, out_features, bias)
-        self.activation = activation()
-        self.layer_norm = nn.LayerNorm(out_features) if layer_norm else None
-        self.dropout = nn.Dropout(dropout) if dropout else None
-
-    def forward(self, x):
-        x = self.activation(self.linear(x))
-        if self.layer_norm:
-            x = self.layer_norm(x)
-        if self.dropout:
-            x = self.dropout(x)
-        return x
-
-class DGPROModel(nn.Module):
-    def __init__(self, nb_gos, nodes=[2048,]):
-        super().__init__()
-        self.nb_gos = nb_gos
-        input_length = 5120
-        net = []
-        for hidden_dim in nodes:
-            net.append(MLPBlock(input_length, hidden_dim))
-            net.append(Residual(MLPBlock(hidden_dim, hidden_dim)))
-            input_length = hidden_dim
-        net.append(nn.Linear(input_length, nb_gos))
-        self.net = nn.Sequential(*net)
-        
-    def forward(self, features):
-        return self.net(features)
-    
-class DeepGOPU(nn.Module):
-    def __init__(self, nb_gos, prior, gamma, margin_factor, loss_type, terms_count, device = "cuda"):
-        super().__init__()
-        self.nb_gos = nb_gos
-        self.prior = prior
-        self.gamma = gamma
-        self.margin = self.prior*margin_factor
-        self.dgpro = DGPROModel(nb_gos)
-        self.loss_type = loss_type
-        self.device = device
-        
-        max_count = max(terms_count.values())
-        self.priors = [self.prior*x/max_count for x in terms_count.values()]
-        self.priors = th.tensor(self.priors, dtype=th.float32, requires_grad=False).to(device)
-                        
-    def pu_loss(self, data, labels):
-        preds = self.dgpro(data)
-
-        pos_label = (labels == 1).float()
-        unl_label = (labels != 1).float()
-
-        p_above = - (F.logsigmoid(preds)*pos_label).sum() / pos_label.sum()
-        p_below = - (F.logsigmoid(-preds)*pos_label).sum() / pos_label.sum()
-        u_below = - (F.logsigmoid(-preds)*unl_label).sum() / unl_label.sum()
-
-        loss = self.prior * p_above + th.relu(u_below - self.prior*p_below + self.margin)
-        return loss
-
-    def pu_ranking_loss(self, data, labels):
-        preds = self.dgpro(data)
-
-        pos_label = (labels == 1).float()
-        unl_label = (labels != 1).float()
-
-        p_above = - (F.logsigmoid(preds)*pos_label).sum() / pos_label.sum()
-        p_below = - (F.logsigmoid(-preds)*pos_label).sum() / pos_label.sum()
-        u_below = - (F.logsigmoid(preds * pos_label - preds*unl_label)).sum() / unl_label.sum()
-        loss = self.prior * p_above + th.relu(u_below - self.prior*p_below + self.margin)
-        return loss
-
-    def pu_ranking_loss_multi(self, data, labels):
-        preds = self.dgpro(data)
-
-        pos_label = (labels == 1).float()
-        unl_label = (labels != 1).float()
-
-        p_above = - (F.logsigmoid(preds)*pos_label).sum(dim=0) / pos_label.sum()
-        p_below = - (F.logsigmoid(-preds)*pos_label).sum(dim=0) / pos_label.sum()
-        u_below = - (F.logsigmoid(preds * pos_label - preds*unl_label)).sum(dim=0) / unl_label.sum()
-
-        loss = self.priors * p_above + th.relu(u_below - self.priors*p_below + self.margin)
-        loss = loss.sum()
-        return loss
-
-    def forward(self, data, labels):
-        if self.loss_type == 'pu':
-            return self.pu_loss(data, labels)
-        elif self.loss_type == "pu_ranking":
-            return self.pu_ranking_loss(data, labels)
-        elif self.loss_type == "pu_ranking_multi":
-            return self.pu_ranking_loss_multi(data, labels)
-        else:
-            raise NotImplementedError
-
-    def logits(self, data):
-        return self.dgpro(data)
-    
-    def predict(self, data):
-        return th.sigmoid(self.dgpro(data))
- 
 
 @ck.command()
 @ck.option(
@@ -171,11 +63,11 @@ class DeepGOPU(nn.Module):
 @ck.option('--run', '-r', default='0', help='Run')
 def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, loss_type, max_lr, min_lr_factor,  margin_factor, load, alpha_test, combine, device, run):
  
-    name = f"{ont}_{loss_type}"
+    name = f"{ont}_{loss_type}_time"
     wandb_logger = wandb.init(project="final-dgpu-similarity-based", name= f"{name}_{run}", group=name)
                                     
     go_file = f'{data_root}/go-basic.obo'
-    model_name = f"{model_name}_bs{batch_size}_mf{margin_factor}_lr{max_lr}_minlr{min_lr_factor}_p{prior}_r{run}"
+    model_name = f"pu_{run}"
     model_file = f'{data_root}/{ont}/{model_name}.th'
     out_file = f'{data_root}/{ont}/predictions_{model_name}_{run}.pkl'
 
@@ -188,7 +80,7 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
     valid_features, valid_labels, _ = valid_data
     test_features, test_labels, _ = test_data
 
-    net = DeepGOPU(n_terms, prior, gamma, margin_factor, loss_type, terms_count).to(device)
+    net = PUModel(n_terms, prior, gamma, margin_factor, loss_type, terms_count).to(device)
     
     train_loader = FastTensorDataLoader(
         train_features, train_labels, batch_size=batch_size, shuffle=True)
@@ -325,6 +217,10 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
         
     test_df['preds'] = preds
     test_df.to_pickle(out_file)
+    
+    combine = True
+    test(data_root, ont, model_name, run, combine, alpha_test, False, wandb_logger)
+    combine = False
     test(data_root, ont, model_name, run, combine, alpha_test, False, wandb_logger)
     wandb.finish()
 
@@ -365,7 +261,7 @@ def load_data(data_root, ont, go):
     
     train_df = pd.read_pickle(f'{data_root}/{ont}/train_data.pkl')
     valid_df = pd.read_pickle(f'{data_root}/{ont}/valid_data.pkl')
-    test_df = pd.read_pickle(f'{data_root}/{ont}/test_data.pkl')
+    test_df = pd.read_pickle(f'{data_root}/{ont}/time_data_esm.pkl')
                         
     train_data = get_data(train_df, terms_dict, go, data_root)
     valid_data = get_data(valid_df, terms_dict, go, data_root)

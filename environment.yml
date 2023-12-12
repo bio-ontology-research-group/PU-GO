@@ -5,6 +5,8 @@ channels:
   - conda-forge
 dependencies:
   - python=3.8
+  - biopython==1.81
+  - fair-esm==2.0.0
   - click
   - JPype1=1.4.1
   - pandas

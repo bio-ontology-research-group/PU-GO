@@ -21,12 +21,11 @@ logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 
 
 def test(data_root, ont, model, run, combine, alpha, tex_output, wandb_logger):
-    
     train_data_file = f'{data_root}/{ont}/train_data.pkl'
     valid_data_file = f'{data_root}/{ont}/valid_data.pkl'
     test_data_file = f'{data_root}/{ont}/predictions_{model}_{run}.pkl'
     if combine:
-        diam_data_file = f'{data_root}/{ont}/test_data_diam.pkl'
+        diam_data_file = f'{data_root}/{ont}/time_data_diam.pkl'
         diam_df = pd.read_pickle(diam_data_file)
 
     terms_file = f'{data_root}/{ont}/terms.pkl'
@@ -54,7 +53,7 @@ def test(data_root, ont, model, run, combine, alpha, tex_output, wandb_logger):
     
     # Combine scores for diamond and deepgo
     eval_preds = []
-    
+
     for i, row in enumerate(test_df.itertuples()):
         if combine:
             diam_preds = np.zeros((len(terms),), dtype=np.float32)
@@ -62,7 +61,7 @@ def test(data_root, ont, model, run, combine, alpha, tex_output, wandb_logger):
                 if go_id in terms_dict:
                     diam_preds[terms_dict[go_id]] = score
         
-                preds = diam_preds * alpha + row.preds * (1 - alpha)
+            preds = diam_preds * alpha + row.preds * (1 - alpha)
         else:
             preds = row.preds
         eval_preds.append(preds)
