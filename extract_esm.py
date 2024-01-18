@@ -11,6 +11,7 @@ from pathlib import Path
 from esm import Alphabet, FastaBatchedDataset, ProteinBertModel, pretrained
 import os
 import gzip
+from tqdm import tqdm
 
 class GzippedFastaBatchedDataset(FastaBatchedDataset):
 
@@ -82,7 +83,7 @@ def extract_esm(fasta_file, model_location='esm2_t48_15B_UR50D',
     proteins = []
     data = []
     with torch.no_grad():
-        for batch_idx, (labels, strs, toks) in enumerate(data_loader):
+        for batch_idx, (labels, strs, toks) in tqdm(enumerate(data_loader), total=len(data_loader)):
             print(
                 f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
             )
