@@ -38,7 +38,7 @@ cd PU-GO
 wget  https://deepgo.cbrc.kaust.edu.sa/data/pu-go-data.tar.gz
 tar -xzvf pu-go-data.tar.gz
 ```
-* For each subontology directory [mf, cc, bp] run:
+* For each subontology directory [mf, cc, bp] run the following command to extract the 10 trained models:
 
 ```
 cd data/mf
