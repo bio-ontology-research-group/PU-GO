@@ -43,19 +43,21 @@ class DGPROModel(nn.Module):
         return self.net(features)
     
 class PUModel(nn.Module):
-    def __init__(self, nb_gos, prior, gamma, margin_factor, loss_type, terms_count, device = "cuda"):
+    def __init__(self, nb_gos, prior, margin_factor, loss_type, terms_count, device = "cuda", inference=False):
         super().__init__()
         self.nb_gos = nb_gos
-        self.prior = prior
-        self.gamma = gamma
-        self.margin = self.prior*margin_factor
         self.dgpro = DGPROModel(nb_gos)
-        self.loss_type = loss_type
-        self.device = device
+
+        if not inference:
+            self.prior = prior
+            self.margin = self.prior*margin_factor 
         
-        max_count = max(terms_count.values())
-        self.priors = [self.prior*x/max_count for x in terms_count.values()]
-        self.priors = th.tensor(self.priors, dtype=th.float32, requires_grad=False).to(device)
+            self.loss_type = loss_type
+            self.device = device
+        
+            max_count = max(terms_count.values())
+            self.priors = [self.prior*x/max_count for x in terms_count.values()]
+            self.priors = th.tensor(self.priors, dtype=th.float32, requires_grad=False).to(device)
                         
     def pu_loss(self, data, labels):
         preds = self.dgpro(data)
@@ -111,4 +113,6 @@ class PUModel(nn.Module):
     
     def predict(self, data):
         return th.sigmoid(self.dgpro(data))
+
+
 

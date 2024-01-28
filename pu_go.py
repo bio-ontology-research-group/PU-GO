@@ -50,7 +50,6 @@ logger.setLevel(logging.DEBUG)
 @ck.option(
     '--prior', '-p', default=1e-4,
     help='Prior')
-@ck.option("--gamma", '-g', default = 0.5)
 @ck.option("--alpha", '-a', default = 0.5, help="Weight of the unlabeled loss")
 @ck.option('--loss_type', '-loss', default='pu', type=ck.Choice(['pu', 'pu_ranking', 'pu_ranking_multi']))
 @ck.option('--max_lr', '-lr', default=1e-4)
@@ -61,7 +60,7 @@ logger.setLevel(logging.DEBUG)
 @ck.option("--combine", "-c", is_flag=True)
 @ck.option('--device', '-d', default='cuda', help='Device')
 @ck.option('--run', '-r', default='0', help='Run')
-def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, loss_type, max_lr, min_lr_factor,  margin_factor, load, alpha_test, combine, device, run):
+def main(data_root, ont, model_name, batch_size, epochs, prior, alpha, loss_type, max_lr, min_lr_factor,  margin_factor, load, alpha_test, combine, device, run):
  
     name = f"{ont}_{loss_type}"
     wandb_logger = wandb.init(project="similarity-based", name= f"{name}_{run}", group=name)
@@ -80,7 +79,7 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
     valid_features, valid_labels, _ = valid_data
     test_features, test_labels, _ = test_data
 
-    net = PUModel(n_terms, prior, gamma, margin_factor, loss_type, terms_count).to(device)
+    net = PUModel(n_terms, prior, margin_factor, loss_type, terms_count).to(device)
     
     train_loader = FastTensorDataLoader(
         train_features, train_labels, batch_size=batch_size, shuffle=True)

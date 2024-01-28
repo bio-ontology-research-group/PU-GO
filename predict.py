@@ -49,7 +49,7 @@ def main(in_file, data_root, threshold, batch_size, device):
         n_terms = len(terms_dict)
 
         sum_preds = np.zeros((len(proteins), n_terms), dtype=np.float32)
-        model = PUModel(n_terms).to(device)
+        model = PUModel(n_terms, None, None, None, None, None, inference=True).to(device)
         for mn in ent_models[ont]:
             model_file = f'{data_root}/{ont}/pu_{mn}.th'
             model.load_state_dict(th.load(model_file, map_location=device))

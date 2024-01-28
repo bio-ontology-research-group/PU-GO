@@ -27,16 +27,16 @@ similarity-based and time-based benchmark datasets
 * Other basic dependencies can be installed by running: `conda env create -f environment.yml`
 * Install [diamond](https://github.com/bbuchfink/diamond) program on your system (diamond command should be available)
 
-## Data Availability (TODO)
+## Data Availability
 
-* https://bio2vec.cbrc.kaust.edu.sa/data/pu-go-data.tar.gz - Here you can find the data used to train and evaluate our method.
+* https://deepgo.cbrc.kaust.edu.sa/data/pugo/pu-go-data.tar.gz - Here you can find the data used to train and evaluate our method.
   * `data.tar.gz` - UniProtKB-SwissProt dataset (release 2023_03)
     
 * Run:
 
 ```
 cd PU-GO
-wget  https://deepgo.cbrc.kaust.edu.sa/data/pu-go-data.tar.gz
+wget https://deepgo.cbrc.kaust.edu.sa/data/pugo/pu-go-data.tar.gz
 tar -xzvf pu-go-data.tar.gz
 ```
 * For each subontology directory [mf, cc, bp] run the following command to extract the 10 trained models:
