@@ -1,4 +1,4 @@
-name: deepgopu
+name: pugo
 channels:
   - pytorch
   - nvidia
@@ -8,10 +8,7 @@ dependencies:
   - biopython==1.81
   - fair-esm==2.0.0
   - click
-  - JPype1=1.4.1
   - pandas
   - pytorch
   - pytorch-cuda==11.8
-  - pip
-  - pip:
-      - mowl-borg>=0.2.0
+
