@@ -14,7 +14,6 @@ from scipy.spatial import distance
 from scipy import sparse
 import math
 from utils import FUNC_DICT, Ontology, NAMESPACES, EXP_CODES
-from matplotlib import pyplot as plt
 
 
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
@@ -189,22 +188,7 @@ def test(data_root, ont, model, run, combine, alpha, tex_output, wandb_logger):
         tex += f"{fmax:0.3f} & {smin:0.3f} & {aupr:0.3f} & {avg_auc:0.3f} \\\\"
         print(tex)
         
-    plt.figure()
-    lw = 2
-    plt.plot(recalls, precisions, color='darkorange',
-             lw=lw, label=f'AUPR curve (area = {aupr:0.2f})')
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel('Recall')
-    plt.ylabel('Precision')
-    plt.title('Area Under the Precision-Recall curve')
-    plt.legend(loc="lower right")
-    plt.savefig(f'{data_root}/{ont}/aupr_{model}.pdf')
-    df = pd.DataFrame({'precisions': precisions, 'recalls': recalls})
-    df.to_pickle(f'{data_root}/{ont}/pr_{model}.pkl')
-
-    
-
+                                                
     
 def compute_roc(labels, preds):
     # Compute ROC curve and ROC area for each class

@@ -7,7 +7,7 @@ import time
 import math
 import gzip
 from utils import Ontology, NAMESPACES
-from models import PUModel
+from nn import PUModel
 from extract_esm import extract_esm
 from pathlib import Path
 import torch as th

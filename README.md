@@ -20,26 +20,40 @@ similarity-based and time-based benchmark datasets
 
 ## Dependencies
 
-* The code was developed and tested using Python 3.8
-* To install the necessary dependencies run: `conda env create -f environment.yml`
+* Python 3.10
+* [PyTorch 2.1.0](https://pytorch.org/)
+* [FAIR-ESM](https://github.com/facebookresearch/esm) (for predicting over FASTA files)
+* Other basic dependencies can be installed by running: `conda env create -f environment.yml`
 * Install [diamond](https://github.com/bbuchfink/diamond) program on your system (diamond command should be available)
 
 ## Data Availability (TODO)
 
-* https://deepgo.cbrc.kaust.edu.sa/data/pugo - Here you can find the data used to train and evaluate our method.
+* https://bio2vec.cbrc.kaust.edu.sa/data/pu-go-data.tar.gz - Here you can find the data used to train and evaluate our method.
   * `data.tar.gz` - UniProtKB-SwissProt dataset (release 2023_03)
-  * `time-data.tar.gz` Testing dataset from UniProtKB-SwissProt version 2023_05.
-  * `models.tar.gz` Trained models. 10 models per each subontology: MFO, CCO and BPO.
+    
+* Run:
+
+```
+cd PU-GO
+wget  https://deepgo.cbrc.kaust.edu.sa/data/pu-go-data.tar.gz
+tar -xzvf pu-go-data.tar.gz
+```
+* For each subontology directory [mf, cc, bp] run:
+
+```
+cd data/mf
+tar -xzvf models.tar.gz
+```
 
 ## Scripts
 
-* `pu.py` script to train PU-GO on the similarity-based split. We show the commands with the selected hyperparameters for each subontology.
-  * MFO: `python pu.py -dr data/ -ont mf  --run 0 --batch_size 35 --loss_type pu_ranking_multi --margin_factor 0.01152 --max_lr 0.004573 --min_lr_factor 0.0008792 --prior 0.000143`
-  * CCO:  `python pu.py -dr data/ -ont cc  --run 0 --batch_size 30 --loss_type pu_ranking_multi --margin_factor 0.09812 --max_lr 0.0008681 --min_lr_factor 0.08364 --prior 0.0001106`
-  * BPO: `python pu.py -dr data/ -ont bp  --run 0 --batch_size 39 --loss_type pu_ranking_multi --margin_factor 0.02457 --max_lr 0.0004305 --min_lr_factor 0.09056 --prior 0.0007845`
+* `pu_go.py` script to train/test PU-GO on the similarity-based split. We show the commands with the selected hyperparameters for each subontology.
+  * MFO: `python pu_go.py -dr data/ -ont mf  --run 0 --batch_size 35 --loss_type pu_ranking_multi --margin_factor 0.01152 --max_lr 0.004573 --min_lr_factor 0.0008792 --prior 0.000143 -ld`
+  * CCO:  `python pu_go.py -dr data/ -ont cc  --run 0 --batch_size 30 --loss_type pu_ranking_multi --margin_factor 0.09812 --max_lr 0.0008681 --min_lr_factor 0.08364 --prior 0.0001106 -ld`
+  * BPO: `python pu_go.py -dr data/ -ont bp  --run 0 --batch_size 39 --loss_type pu_ranking_multi --margin_factor 0.02457 --max_lr 0.0004305 --min_lr_factor 0.09056 --prior 0.0007845 -ld`
 
 
-* `pu_time.py` script to train PU-GO on the time-based split. For each command before, just add `-ld` to load the model.
+* `pu_go_time.py` script to train PU-GO on the time-based split. 
 
 * `predict.py` script to predict functions given a FASTA file. 
   * Usage: `python predict.py -if your_fasta_file.fa -d cuda`

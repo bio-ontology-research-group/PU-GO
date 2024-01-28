@@ -4,6 +4,8 @@ from utils import Ontology, seed_everything
 import numpy as np
 from sklearn.metrics import roc_curve, auc, precision_recall_curve
 import copy
+import sys
+sys.path.append('scripts/')
 
 import torch as th
 import torch.nn as nn
@@ -20,8 +22,7 @@ import sys
 from tqdm import tqdm
 import math
 
-from models import PUModel
-
+from nn import PUModel
 from evaluate import test
 
 import wandb
@@ -30,7 +31,7 @@ import logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-
+    
 @ck.command()
 @ck.option(
     '--data_root', '-dr', default='data',
@@ -62,7 +63,7 @@ logger.setLevel(logging.DEBUG)
 @ck.option('--device', '-d', default='cuda', help='Device')
 @ck.option('--run', '-r', default='0', help='Run')
 def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, loss_type, max_lr, min_lr_factor,  margin_factor, load, alpha_test, combine, device, run):
- 
+    load = True
     name = f"{ont}_{loss_type}_time"
     wandb_logger = wandb.init(project="final-dgpu-similarity-based", name= f"{name}_{run}", group=name)
                                     
@@ -219,8 +220,10 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, gamma, alpha, lo
     test_df.to_pickle(out_file)
     
     combine = True
+    print("Computing metrics with Diamond predictions")
     test(data_root, ont, model_name, run, combine, alpha_test, False, wandb_logger)
     combine = False
+    print("Computing metrics without Diamond predictions")
     test(data_root, ont, model_name, run, combine, alpha_test, False, wandb_logger)
     wandb.finish()
 

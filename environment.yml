@@ -1,14 +1,15 @@
 name: pugo
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
 dependencies:
-  - python=3.8
+  - python=3.10
   - biopython==1.81
   - fair-esm==2.0.0
   - click
   - pandas
-  - pytorch
-  - pytorch-cuda==11.8
-
+  - pip
+  - pip:
+    - wandb
+    - scikit-learn
+    - tqdm
+    - requests
