@@ -1,4 +1,5 @@
-# PU-GO: Predicting Functions with Positive-Unlabeled Learning
+# Predicting protein functions using positive-unlabeled ranking with ontology-based priors
+
 
 ## Abstract
 
