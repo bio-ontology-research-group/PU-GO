@@ -1,46 +1,31 @@
+import sys
 import click as ck
 import pandas as pd
-from utils import Ontology
 import torch as th
 import numpy as np
 from torch import nn
 from torch.nn import functional as F
-from torch import optim
-from sklearn.metrics import roc_curve, auc, matthews_corrcoef
-import copy
-from torch.utils.data import DataLoader, IterableDataset, TensorDataset
-from itertools import cycle
+from sklearn.metrics import precision_recall_curve
 import math
-from aminoacids import to_onehot, MAXLEN
-from torch_utils import FastTensorDataLoader
-import csv
-from torch.optim.lr_scheduler import MultiStepLR
-from multiprocessing import Pool
+
+from multiprocessing import get_context
 from functools import partial
-import os
-import random
-
-def seed_everything(seed=42):
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
-    th.manual_seed(seed)
-    th.cuda.manual_seed(seed)
-    th.cuda.manual_seed_all(seed)
-    th.backends.cudnn.deterministic = True
-    th.backends.cudnn.benchmark = False
-
-
+from tqdm import tqdm
+import wandb
+sys.path.append('..')
+from evaluate import test
+from utils import Ontology
+from scripts.torch_utils import FastTensorDataLoader
 
 @ck.command()
 @ck.option(
-    '--data-root', '-dr', default='data',
+    '--data-root', '-dr', default='../data',
     help='Prediction model')
 @ck.option(
     '--ont', '-ont', default='mf',
     help='Prediction model')
 @ck.option(
-    '--model-name', '-mn', default='dgpu-mlp',
+    '--model-name', '-mn', default='mlp',
     help='Prediction model')
 @ck.option(
     '--batch-size', '-bs', default=37,
@@ -53,23 +38,28 @@ def seed_everything(seed=42):
 @ck.option(
     '--device', '-d', default='cuda',
     help='Device')
-def main(data_root, ont, model_name, batch_size, epochs, load, device):
-    seed_everything(0)
+@ck.option('--run', '-r', default=0, help='Run number')
+def main(data_root, ont, model_name, batch_size, epochs, load, device, run):
+
+    name = f'{model_name}_{ont}_{run}'
+    group = f'{model_name}_{ont}'
+    wandb_logger = wandb.init(project='final-dgpu-similarity-based', name=name,
+                              group=group)
+
     go_file = f'{data_root}/go-basic.obo'
-    model_file = f'{data_root}/{ont}/{model_name}.th'
-    out_file = f'{data_root}/{ont}/predictions_{model_name}.pkl'
+    model_file = f'{data_root}/{ont}/{model_name}_{run}.th'
+    out_file = f'{data_root}/{ont}/predictions_{model_name}_{run}.pkl'
 
     go = Ontology(go_file, with_rels=True)
-    loss_func = nn.BCELoss()
     terms_dict, train_data, valid_data, test_data, test_df = load_data(data_root, ont)
     n_terms = len(terms_dict)
-    
+
     net = DGPROModel(5120, n_terms, device).to(device)
-    
+
     train_features, train_labels = train_data
     valid_features, valid_labels = valid_data
     test_features, test_labels = test_data
-    
+
     train_loader = FastTensorDataLoader(
         *train_data, batch_size=batch_size, shuffle=True)
     valid_loader = FastTensorDataLoader(
@@ -81,11 +71,12 @@ def main(data_root, ont, model_name, batch_size, epochs, load, device):
     test_labels = test_labels.detach().cpu().numpy()
 
     print('Labels', np.sum(valid_labels))
-    
-    optimizer = th.optim.Adam(net.parameters(), lr=1e-5)
-    scheduler = MultiStepLR(optimizer, milestones=[3,], gamma=0.1)
 
-    best_loss = 10000.0
+    optimizer = th.optim.Adam(net.parameters(), lr=1e-5)
+
+    best_fmax = 0
+    tolerance = 5
+    curr_tolerance = tolerance
     if not load:
         print('Training the model')
         for epoch in range(epochs):
@@ -103,9 +94,9 @@ def main(data_root, ont, model_name, batch_size, epochs, load, device):
                     loss.backward()
                     optimizer.step()
                     train_loss += loss.detach().item()
-            
+
             train_loss /= train_steps
-            
+            wandb.log({'train_loss': train_loss})
             print('Validation')
             net.eval()
             with th.no_grad():
@@ -118,24 +109,29 @@ def main(data_root, ont, model_name, batch_size, epochs, load, device):
                         batch_features = batch_features.to(device)
                         batch_labels = batch_labels.to(device)
                         logits = net(batch_features)
-                        batch_loss = F.binary_cross_entropy(logits, batch_labels)
+                        batch_loss = F.binary_cross_entropy(logits,
+                                                            batch_labels)
                         valid_loss += batch_loss.detach().item()
                         preds = np.append(preds, logits.detach().cpu().numpy())
                 valid_loss /= valid_steps
-                roc_auc = compute_roc(valid_labels, preds)
-                print(f'Epoch {epoch}: Loss - {train_loss}, Valid loss - {valid_loss}, AUC - {roc_auc}')
-            if valid_loss < best_loss:
-                best_loss = valid_loss
+                fmax = compute_fmax(valid_labels, preds)
+                wandb.log({"valid_bce_loss": valid_loss, "valid_fmax": fmax})
+                print(f'Epoch {epoch}: Loss - {train_loss}, Valid loss - {valid_loss}, Fmax - {fmax}')
+            if fmax > best_fmax:
+                best_fmax = fmax
                 print('Saving model')
                 th.save(net.state_dict(), model_file)
-
-            # scheduler.step()
-            
-        log_file.close()
+                curr_tolerance = tolerance
+            else:
+                curr_tolerance -= 1
+            if curr_tolerance == 0:
+                print('Early stopping')
+                break
 
     # Loading best model
     print('Loading the best model')
     net.load_state_dict(th.load(model_file))
+    net = net.to(device)
     net.eval()
     with th.no_grad():
         test_steps = int(math.ceil(len(test_labels) / batch_size))
@@ -152,20 +148,29 @@ def main(data_root, ont, model_name, batch_size, epochs, load, device):
                 preds.append(logits.detach().cpu().numpy())
             test_loss /= test_steps
             preds = np.concatenate(preds)
-            roc_auc = 0 # compute_roc(test_labels, preds)
+            roc_auc = 0  # compute_roc(test_labels, preds)
         print(f'Test Loss - {test_loss}, AUC - {roc_auc}')
 
-    preds = list(preds)
-    # Propagate scores using ontology structure
-    with Pool(32) as p:
-        preds = p.map(partial(propagate_annots, go=go, terms_dict=terms_dict), preds)
+    indexed_preds = [(i, preds[i]) for i in range(len(preds))]
+
+    with get_context("spawn").Pool(50) as p:
+        results = []
+        with tqdm(total=len(preds)) as pbar:
+            for output in p.imap_unordered(partial(propagate_annots, go=go, terms_dict=terms_dict), indexed_preds, chunksize=200):
+                results.append(output)
+                pbar.update()
+
+        unordered_preds = [pred for pred in results]
+        ordered_preds = sorted(unordered_preds, key=lambda x: x[0])
+        preds = [pred[1] for pred in ordered_preds]
 
     test_df['preds'] = preds
-
     test_df.to_pickle(out_file)
-
+    test(data_root, ont, model_name, run, False, 0, True, wandb_logger)
+    wandb_logger.finish()
 
 def propagate_annots(preds, go, terms_dict):
+    idx, preds = preds
     prop_annots = {}
     for go_id, j in terms_dict.items():
         score = preds[j]
@@ -177,16 +182,15 @@ def propagate_annots(preds, go, terms_dict):
     for go_id, score in prop_annots.items():
         if go_id in terms_dict:
             preds[terms_dict[go_id]] = score
-    return preds
+    return idx, preds
 
     
-def compute_roc(labels, preds):
-    # Compute ROC curve and ROC area for each class
-    fpr, tpr, _ = roc_curve(labels.flatten(), preds.flatten())
-    roc_auc = auc(fpr, tpr)
-
-    return roc_auc
-
+             
+def compute_fmax(labels, preds):
+    labels[labels == -1] = 0
+    precisions, recalls, thresholds = precision_recall_curve(labels.flatten(), preds.flatten())
+    fmax = round(np.max(2 * (precisions * recalls) / (precisions + recalls + 1e-10)), 3)
+    return fmax
 
 class Residual(nn.Module):
 

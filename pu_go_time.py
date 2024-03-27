@@ -40,7 +40,7 @@ logger.setLevel(logging.DEBUG)
     '--ont', '-ont', default='mf',
     help='Prediction model')
 @ck.option(
-    '--model_name', '-mn', default='dgpu',
+    '--model_name', '-mn', default='pu',
     help='Prediction model')
 @ck.option(
     '--batch_size', '-bs', default=256,
@@ -52,7 +52,7 @@ logger.setLevel(logging.DEBUG)
     '--prior', '-p', default=1e-4,
     help='Prior')
 @ck.option("--alpha", '-a', default = 0.5, help="Weight of the unlabeled loss")
-@ck.option('--loss_type', '-loss', default='pu', type=ck.Choice(['pu', 'pu_ranking', 'pu_ranking_multi']))
+@ck.option('--loss_type', '-loss', default='pu_ranking_multi', type=ck.Choice(['pu', 'pu_ranking', 'pu_ranking_multi']))
 @ck.option('--max_lr', '-lr', default=1e-4)
 @ck.option('--min_lr_factor', '-minlr', default=0.01)
 @ck.option('--margin_factor', '-mf', default=0.0)
@@ -67,9 +67,9 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, alpha, loss_type
     wandb_logger = wandb.init(project="final-dgpu-similarity-based", name= f"{name}_{run}", group=name)
                                     
     go_file = f'{data_root}/go-basic.obo'
-    model_name = f"pu_{run}"
-    model_file = f'{data_root}/{ont}/{model_name}.th'
-    out_file = f'{data_root}/{ont}/predictions_{model_name}_{run}.pkl'
+    model_name = f"{model_name}"
+    model_file = f'{data_root}/{ont}/{model_name}_{run}.th'
+    out_file = f'{data_root}/{ont}/predictions_{model_name}_{run}_time.pkl'
 
     go = Ontology(go_file, with_rels=True)
     terms_dict, train_data, valid_data, test_data, test_df = load_data(data_root, ont, go)
@@ -220,10 +220,10 @@ def main(data_root, ont, model_name, batch_size, epochs, prior, alpha, loss_type
     
     combine = True
     print("Computing metrics with Diamond predictions")
-    test(data_root, ont, model_name, run, combine, alpha_test, False, wandb_logger)
+    test(data_root, ont, model_name, f"{run}_time", combine, alpha_test, False, wandb_logger)
     combine = False
     print("Computing metrics without Diamond predictions")
-    test(data_root, ont, model_name, run, combine, alpha_test, False, wandb_logger)
+    test(data_root, ont, model_name, f"{run}_time", combine, alpha_test, False, wandb_logger)
     wandb.finish()
 
 def propagate_annots(preds, go, terms_dict):

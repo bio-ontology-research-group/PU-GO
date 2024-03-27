@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import os
 import sys
-sys.path.append('.')
+sys.path.append('..')
 
 import click as ck
 import numpy as np
@@ -15,7 +15,7 @@ from extract_esm import extract_esm
 import torch as th
 
 @ck.command()
-@ck.option('--data_root', '-dr', default='data/',)
+@ck.option('--data_root', '-dr', default='../data/',)
 @ck.option('--ont', '-o', default='mf', help='Ontology')    
 @ck.option('--device', '-d', default='cpu', help='Device for ESM2 model')
 def main(data_root, ont, device):

@@ -13,3 +13,4 @@ dependencies:
     - scikit-learn
     - tqdm
     - requests
+    - matplotlib
