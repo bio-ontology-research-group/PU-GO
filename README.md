@@ -29,15 +29,10 @@ similarity-based and time-based benchmark datasets
 
 ## Data Availability
 
-* https://bio2vec.cbrc.kaust.edu.sa/data/pugo/pu-go-data.tar.gz - Here you can find the data used to train and evaluate our method.
+* Download our data from https://dx.doi.org/10.5281/zenodo.11079885 - Here you can find the data used to train and evaluate our method.
+* You will get a file named `pu-go-data.tar.gz`. Place it under the directory containing this repository
+* Uncompress the data with `tar -xzvf pu-go-data.tar.gz`
 
-* Run:
-
-```
-cd PU-GO
-wget https://bio2vec.cbrc.kaust.edu.sa/data/pugo/pu-go-data.tar.gz
-tar -xzvf pu-go-data.tar.gz
-```
 * For each subontology directory [mf, cc, bp] run the following command to extract the 10 trained models:
 
 ```
